@@ -45,19 +45,42 @@ _live_task: asyncio.Task | None = None
 
 
 async def startup_live(sink: BarSink | None = None) -> None:
-    """Live mode startup. Idempotent -- safe to re-call if pool already exists."""
+    """
+    Live mode startup. Idempotent -- safe to re-call if pool already exists.
+
+    Any failure between RestClient() and create_task() must not leak the
+    aiohttp session. We install a scoped try/except so a failed startup
+    releases the client + pool cleanly before re-raising.
+    """
     global _rest, _live_task
 
+    logger.info("[pipeline] step 1/5: initializing asyncpg pool")
     pool = await init_pool()
+    logger.info("[pipeline] step 1/5: pool ready")
+
     _rest = RestClient()
-    today = date.today()
+    try:
+        today = date.today()
 
-    await drop_old_partitions(pool, today)
-    await backfill_all_symbols(pool, _rest, today)
-    await truncate_livestream(pool)
+        logger.info("[pipeline] step 2/5: pruning partitions older than retention (today=%s)", today)
+        await drop_old_partitions(pool, today)
 
-    _live_task = asyncio.create_task(run_livestream(pool, sink=sink))
-    logger.info("datapipe: live stream task started")
+        logger.info("[pipeline] step 3/5: historian backfill starting")
+        await backfill_all_symbols(pool, _rest, today)
+        logger.info("[pipeline] step 3/5: historian backfill complete")
+
+        logger.info("[pipeline] step 4/5: truncating livestream (fresh session)")
+        await truncate_livestream(pool)
+
+        logger.info("[pipeline] step 5/5: spawning livestream task")
+        _live_task = asyncio.create_task(run_livestream(pool, sink=sink))
+        logger.info("[pipeline] live startup complete -- livestream running in background")
+    except Exception:
+        logger.exception("[pipeline] startup_live FAILED -- releasing resources")
+        await _rest.close()
+        _rest = None
+        await close_pool()
+        raise
 
 
 async def startup_replay(cfg: ReplayConfig, sink: BarSink | None = None) -> None:
@@ -78,6 +101,7 @@ async def shutdown() -> None:
     """Cancel background tasks + release network resources."""
     global _rest, _live_task
     if _live_task is not None and not _live_task.done():
+        logger.info("[pipeline] cancelling livestream task")
         _live_task.cancel()
         try:
             await _live_task
@@ -85,7 +109,9 @@ async def shutdown() -> None:
             pass
         _live_task = None
     if _rest is not None:
+        logger.info("[pipeline] closing REST client")
         await _rest.close()
         _rest = None
+    logger.info("[pipeline] closing DB pool")
     await close_pool()
-    logger.info("datapipe: shutdown complete")
+    logger.info("[pipeline] shutdown complete")

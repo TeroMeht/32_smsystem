@@ -5,6 +5,8 @@ psycopg2-binary
 asyncpg
 websockets
 aiohttp
+fastapi
+uvicorn
 pydantic
 pydantic-settings
 pytest

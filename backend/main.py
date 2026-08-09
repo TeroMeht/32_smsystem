@@ -16,27 +16,37 @@ production deploy you'd flip this via a config flag instead.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import date
+from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI
 from pydantic import BaseModel
 
-from backend.common.logging_config import setup_logging
+from backend.common.logging_config import setup_app_logging
 from backend.datapipe import pipeline
 from backend.datapipe.replay import ReplayConfig
 
-logger = logging.getLogger("32_smsystem")
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    setup_logging("32_smsystem", log_dir=__import__("pathlib").Path("logs"))
-    await pipeline.startup_live()
-    yield
-    await pipeline.shutdown()
+    # Root-logger setup so every backend.* module surfaces to stdout + logs/app.log.
+    # Called first so a startup failure below is captured in the log.
+    setup_app_logging(log_dir=Path("logs"))
+    logger.info("=" * 72)
+    logger.info("32_smsystem starting up")
+    logger.info("=" * 72)
+    try:
+        await pipeline.startup_live()
+        logger.info("32_smsystem ready -- serving HTTP")
+        yield
+    finally:
+        logger.info("32_smsystem shutting down")
+        await pipeline.shutdown()
+        logger.info("32_smsystem shutdown complete")
 
 
 app = FastAPI(title="32_smsystem", lifespan=lifespan)

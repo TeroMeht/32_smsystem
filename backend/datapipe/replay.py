@@ -126,7 +126,11 @@ async def _prepare_replay_data(
     ])
 
     # 3. rvol_baseline from the prior sessions ONLY (replay day excluded)
-    await rvol_baseline_db.rebuild(pool, end_day=cfg.day, sample_days=cfg.lookback_days)
+    await rvol_baseline_db.rebuild(
+        pool, end_day=cfg.day,
+        lookback_days=cfg.lookback_days,
+        sample_sessions=5,
+    )
 
     # 4. Fresh livestream for the replay
     await truncate_livestream(pool)
@@ -178,24 +182,31 @@ async def run_replay(
     Cancelling this coroutine mid-replay is safe -- ``process_bar`` writes
     are atomic per bar and any consumed bars stay in the DB.
     """
+    logger.info("[replay] ==> starting replay day=%s speed=%.2f lookback=%dd",
+                cfg.day, cfg.speed, cfg.lookback_days)
+
     symbol_map = await load_active_symbol_map(pool)
     if not symbol_map:
-        logger.warning("replay: no active monitored symbols -- aborting")
+        logger.warning("[replay] no active monitored symbols -- aborting")
         return
 
-    logger.info("replay: preparing data for day=%s speed=%.2f", cfg.day, cfg.speed)
+    logger.info("[replay] preparing data for %d symbols", len(symbol_map))
     bars_per_symbol = await _prepare_replay_data(pool, rest, cfg, symbol_map)
     if not bars_per_symbol:
-        logger.warning("replay: no bars returned for day=%s -- nothing to play", cfg.day)
+        logger.warning("[replay] no bars returned for day=%s -- nothing to play", cfg.day)
         return
+    logger.info("[replay] data prepared -- %d symbols have replay bars", len(bars_per_symbol))
 
     store = SessionStore()
     await _prime_state_from_db(pool, store, cfg, symbol_map)
+    logger.info("[replay] session state primed")
 
     timeline = _merge_timeline(bars_per_symbol)
     total = len(timeline)
-    logger.info("replay: %d bars queued across %d symbols", total, len(bars_per_symbol))
+    logger.info("[replay] timeline built: %d bars across %d symbols", total, len(bars_per_symbol))
 
+    progress_step = max(1, total // 20)  # every ~5%
+    errors = 0
     prev_ts = None
     for i, bar in enumerate(timeline):
         if prev_ts is not None and cfg.speed > 0:
@@ -206,9 +217,12 @@ async def run_replay(
         try:
             await process_bar(pool, store, bar, sink=sink)
         except Exception:
-            logger.exception("replay: process_bar failed for %s @ %s", bar.symbol, bar.ts)
+            errors += 1
+            logger.exception("[replay] process_bar failed for %s @ %s", bar.symbol, bar.ts)
 
-        if i and i % 1000 == 0:
-            logger.info("replay: %d / %d bars processed", i, total)
+        if i and i % progress_step == 0:
+            pct = 100 * i / total
+            logger.info("[replay] progress: %d / %d bars (%.1f%%) errors=%d ts=%s",
+                        i, total, pct, errors, bar.ts.isoformat())
 
-    logger.info("replay: complete (%d bars)", total)
+    logger.info("[replay] ==> complete (%d bars, %d errors)", total, errors)

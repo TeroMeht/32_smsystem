@@ -1,0 +1,248 @@
+[2026-08-09 09:59:35] INFO backend.main: ========================================================================
+[2026-08-09 09:59:35] INFO backend.main: 32_smsystem starting up
+[2026-08-09 09:59:35] INFO backend.main: ========================================================================
+[2026-08-09 09:59:35] INFO backend.datapipe.pipeline: [pipeline] step 1/5: initializing asyncpg pool
+[2026-08-09 09:59:35] INFO backend.database.pool: [db.pool] connecting to postgresql://postgres:***@localhost:5432/32_smsystem (min=2 max=20)
+[2026-08-09 09:59:35] INFO backend.database.pool: [db.pool] pool created
+[2026-08-09 09:59:35] INFO backend.datapipe.pipeline: [pipeline] step 1/5: pool ready
+[2026-08-09 09:59:35] INFO backend.datapipe.pipeline: [pipeline] step 2/5: pruning partitions older than retention (today=2026-08-09)
+[2026-08-09 09:59:35] INFO backend.database.partitions: [db.partitions] dropped 6 partitions past retention
+[2026-08-09 09:59:35] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill starting
+[2026-08-09 09:59:35] INFO backend.datapipe.historian: [historian] backfill for 1712 symbols (today=2026-08-09, concurrency=10)
+[2026-08-09 09:59:35] INFO backend.datapipe.historian: [historian] pruning old partitions before insert
+[2026-08-09 09:59:35] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 09:59:35] INFO backend.datapipe.historian: [historian] ensuring 6 intraday + 21 daily partitions
+[2026-08-09 09:59:35] INFO backend.database.partitions: [db.partitions] ensured 6 intraday_bars + 21 daily partitions
+[2026-08-09 09:59:42] INFO backend.datapipe.historian: [historian] progress: 85/1712 symbols (daily_rows=930 intraday_rows=50807 errors=0 in_flight=9)
+[2026-08-09 09:59:45] INFO backend.datapipe.historian: [historian] heartbeat: done=163/1712 in_flight=10 stages={'intraday_fetch': 10} daily_rows=1730 intraday_rows=88057 errors=0
+[2026-08-09 09:59:46] INFO backend.datapipe.historian: [historian] progress: 170/1712 symbols (daily_rows=1730 intraday_rows=90979 errors=0 in_flight=8)
+[2026-08-09 09:59:50] INFO backend.datapipe.historian: [historian] progress: 255/1712 symbols (daily_rows=2640 intraday_rows=128663 errors=0 in_flight=9)
+[2026-08-09 09:59:53] INFO backend.datapipe.historian: [historian] progress: 340/1712 symbols (daily_rows=3430 intraday_rows=164714 errors=0 in_flight=9)
+[2026-08-09 09:59:55] INFO backend.datapipe.historian: [historian] heartbeat: done=378/1712 in_flight=10 stages={'intraday_insert': 1, 'intraday_fetch': 9} daily_rows=3880 intraday_rows=181842 errors=0
+[2026-08-09 09:59:58] INFO backend.datapipe.historian: [historian] progress: 425/1712 symbols (daily_rows=4300 intraday_rows=200283 errors=0 in_flight=9)
+[2026-08-09 10:00:02] INFO backend.datapipe.historian: [historian] progress: 510/1712 symbols (daily_rows=5160 intraday_rows=234110 errors=0 in_flight=9)
+[2026-08-09 10:00:05] INFO backend.datapipe.historian: [historian] heartbeat: done=580/1712 in_flight=10 stages={'intraday_insert': 2, 'daily_partition_ensure': 8} daily_rows=5820 intraday_rows=260494 errors=0
+[2026-08-09 10:00:06] INFO backend.datapipe.historian: [historian] progress: 595/1712 symbols (daily_rows=5980 intraday_rows=266371 errors=0 in_flight=9)
+[2026-08-09 10:00:12] INFO backend.datapipe.historian: [historian] progress: 680/1712 symbols (daily_rows=6860 intraday_rows=298693 errors=0 in_flight=9)
+[2026-08-09 10:00:15] INFO backend.datapipe.historian: [historian] heartbeat: done=724/1712 in_flight=10 stages={'intraday_insert': 5, 'intraday_partition_ensure': 3, 'intraday_fetch': 2} daily_rows=7340 intraday_rows=322471 errors=0
+[2026-08-09 10:00:21] INFO backend.datapipe.historian: [historian] progress: 765/1712 symbols (daily_rows=7740 intraday_rows=368185 errors=0 in_flight=9)
+[2026-08-09 10:00:25] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:00:25] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 32.8s
+[2026-08-09 10:00:35] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:00:35] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 42.8s
+[2026-08-09 10:00:35] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 39.0s
+[2026-08-09 10:00:45] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:00:45] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 52.8s
+[2026-08-09 10:00:45] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 49.0s
+[2026-08-09 10:00:45] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 32.1s
+[2026-08-09 10:00:45] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 31.3s
+[2026-08-09 10:00:45] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 30.1s
+[2026-08-09 10:00:55] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 62.8s
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 59.0s
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 42.1s
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 41.3s
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 40.1s
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 38.2s
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 36.9s
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 34.3s
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 32.9s
+[2026-08-09 10:00:55] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 31.2s
+[2026-08-09 10:01:06] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 72.9s
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 69.0s
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 52.1s
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 51.3s
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 50.2s
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 48.2s
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 46.9s
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 44.3s
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 42.9s
+[2026-08-09 10:01:06] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 41.2s
+[2026-08-09 10:01:16] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 82.9s
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 79.0s
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 62.1s
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 61.3s
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 60.2s
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 58.2s
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 56.9s
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 54.4s
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 52.9s
+[2026-08-09 10:01:16] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 51.2s
+[2026-08-09 10:01:26] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 92.9s
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 89.0s
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 72.1s
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 71.4s
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 70.2s
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 68.2s
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 66.9s
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 64.4s
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 62.9s
+[2026-08-09 10:01:26] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 61.3s
+[2026-08-09 10:01:36] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 102.9s
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 99.1s
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 82.1s
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 81.4s
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 80.2s
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 78.2s
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 76.9s
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 74.4s
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 72.9s
+[2026-08-09 10:01:36] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 71.3s
+[2026-08-09 10:01:46] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 112.9s
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 109.1s
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 92.2s
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 91.4s
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 90.2s
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 88.2s
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 86.9s
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 84.4s
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 82.9s
+[2026-08-09 10:01:46] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 81.3s
+[2026-08-09 10:01:56] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 122.9s
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 119.1s
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 102.2s
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 101.4s
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 100.2s
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 98.2s
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 96.9s
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 94.4s
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 92.9s
+[2026-08-09 10:01:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 91.3s
+[2026-08-09 10:02:06] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 132.9s
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 129.1s
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 112.2s
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 111.4s
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 110.2s
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 108.2s
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 106.9s
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 104.4s
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 103.0s
+[2026-08-09 10:02:06] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 101.3s
+[2026-08-09 10:02:16] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 143.0s
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 139.1s
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 122.2s
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 121.4s
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 120.2s
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 118.3s
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 117.0s
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 114.4s
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 113.0s
+[2026-08-09 10:02:16] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 111.3s
+[2026-08-09 10:02:26] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 153.0s
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 149.1s
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 132.2s
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 131.4s
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 130.3s
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 128.3s
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 127.0s
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 124.4s
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 123.0s
+[2026-08-09 10:02:26] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 121.3s
+[2026-08-09 10:02:36] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 163.0s
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 159.1s
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 142.2s
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 141.5s
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 140.3s
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 138.3s
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 137.0s
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 134.5s
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 133.0s
+[2026-08-09 10:02:36] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 131.4s
+[2026-08-09 10:02:46] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 173.0s
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 169.2s
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 152.2s
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 151.5s
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 150.3s
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 148.3s
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 147.0s
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 144.5s
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 143.0s
+[2026-08-09 10:02:46] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 141.4s
+[2026-08-09 10:02:56] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 183.0s
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 179.2s
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 162.2s
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 161.5s
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 160.3s
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 158.3s
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 157.0s
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 154.5s
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 153.0s
+[2026-08-09 10:02:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 151.4s
+[2026-08-09 10:03:06] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 193.0s
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 189.2s
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 172.3s
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 171.5s
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 170.3s
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 168.3s
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 167.0s
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 164.5s
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 163.0s
+[2026-08-09 10:03:06] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 161.4s
+[2026-08-09 10:03:16] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 203.0s
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 199.2s
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 182.3s
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 181.5s
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 180.3s
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 178.3s
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 177.0s
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 174.5s
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 173.1s
+[2026-08-09 10:03:16] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 171.4s
+[2026-08-09 10:03:26] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 213.0s
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 209.2s
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 192.3s
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 191.5s
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 190.3s
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 188.3s
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 187.0s
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 184.5s
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 183.1s
+[2026-08-09 10:03:26] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 181.4s
+[2026-08-09 10:03:36] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 223.0s
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 219.2s
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 202.3s
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 201.5s
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 200.3s
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 198.4s
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 197.1s
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 194.5s
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 193.1s
+[2026-08-09 10:03:36] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 191.4s
+[2026-08-09 10:03:46] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 233.0s
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 229.2s
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 212.3s
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 211.5s
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 210.3s
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 208.4s
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 207.1s
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 204.5s
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 203.1s
+[2026-08-09 10:03:46] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 201.4s
+[2026-08-09 10:03:56] INFO backend.datapipe.historian: [historian] heartbeat: done=779/1712 in_flight=10 stages={'intraday_insert': 10} daily_rows=7890 intraday_rows=382235 errors=0
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: KEYS stuck in intraday_insert for 243.1s
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TPR stuck in intraday_insert for 239.2s
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: LCID stuck in intraday_insert for 222.3s
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: FHN stuck in intraday_insert for 221.5s
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: CG stuck in intraday_insert for 220.4s
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: ALC stuck in intraday_insert for 218.4s
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: ONON stuck in intraday_insert for 217.1s
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 214.5s
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 213.1s
+[2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 211.4s

@@ -38,7 +38,9 @@ CREATE UNLOGGED TABLE livestream (
 );
 
 
--- 3. intraday_bars (1-min history, partitioned by day, 5-day retention)
+-- 3. intraday_bars (1-min history, partitioned by day, 8-day retention)
+--    Retention is 8 calendar days so the RVOL baseline can always find
+--    at least 5 trading sessions on disk (survives weekends + one holiday).
 CREATE TABLE intraday_bars (
     symbolid  integer      NOT NULL REFERENCES monitored_symbols(symbolid),
     ts        timestamptz  NOT NULL,

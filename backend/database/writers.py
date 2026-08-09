@@ -63,8 +63,9 @@ async def insert_livestream_bar(pool: asyncpg.Pool, bar: Bar1m) -> None:
 async def truncate_livestream(pool: asyncpg.Pool) -> None:
     """Called at session boundary / process start so livestream = today only."""
     async with pool.acquire() as conn:
+        before = await conn.fetchval("SELECT COUNT(*) FROM livestream;")
         await conn.execute("TRUNCATE TABLE livestream;")
-    logger.info("truncated livestream")
+    logger.info("[db.writers] truncated livestream (was %d rows)", before)
 
 
 # ---------------------------------------------------------------------------
@@ -99,10 +100,22 @@ async def bulk_insert_intraday_bars(
     bars: Sequence[Bar1m],
 ) -> None:
     """
-    Historian and replay-warmup path. copy_records_to_table would be faster
-    but partitioned tables historically had quirks with it; executemany is
-    plenty fast for backfill volumes we're dealing with (single-day bars
-    per symbol = a few hundred rows).
+    Backfill/replay bulk insert into intraday_bars.
+
+    Uses COPY into a per-connection TEMP staging table, then a single
+    ``INSERT ... SELECT ... ON CONFLICT DO NOTHING`` from staging into the
+    partitioned target. Rationale:
+
+      * ``executemany`` with ``ON CONFLICT DO UPDATE`` serializes on
+        partition-level locks when many connections write concurrently --
+        that's what pinned all 10 historian workers on ``intraday_insert``
+        for 90+s in earlier runs.
+      * COPY moves rows in a single protocol frame; the follow-up INSERT
+        does one plan + one execution.
+      * DO NOTHING is safe here because Massive's historical bars are
+        immutable -- a duplicate (symbolid, ts) means we already have the
+        canonical values. The live path (insert_intraday_bar) still uses
+        DO UPDATE for late corrections.
     """
     if not bars:
         return
@@ -111,7 +124,32 @@ async def bulk_insert_intraday_bars(
         for b in bars
     ]
     async with pool.acquire() as conn:
-        await conn.executemany(_INSERT_INTRADAY_SQL, rows)
+        async with conn.transaction():
+            await conn.execute(
+                """
+                CREATE TEMP TABLE _stage_intraday (
+                    symbolid  integer,
+                    ts        timestamptz,
+                    open      numeric(12,4),
+                    high      numeric(12,4),
+                    low       numeric(12,4),
+                    close     numeric(12,4),
+                    volume    bigint
+                ) ON COMMIT DROP;
+                """
+            )
+            await conn.copy_records_to_table(
+                "_stage_intraday",
+                records=rows,
+                columns=["symbolid", "ts", "open", "high", "low", "close", "volume"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO intraday_bars (symbolid, ts, open, high, low, close, volume)
+                SELECT symbolid, ts, open, high, low, close, volume FROM _stage_intraday
+                ON CONFLICT (symbolid, ts) DO NOTHING;
+                """
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +175,14 @@ async def bulk_insert_daily_bars(
     pool: asyncpg.Pool,
     bars: Iterable[DailyBar],
 ) -> None:
+    """
+    Backfill bulk insert into daily. Same COPY-into-temp pattern as
+    bulk_insert_intraday_bars -- see that docstring for rationale.
+
+    ATR is included in the DO UPDATE branch because a fresh ATR14
+    computation from a wider window can legitimately produce a different
+    value for the same date, and we want the newest one.
+    """
     rows = [
         (b.symbolid, b.d, b.open, b.high, b.low, b.close, b.volume, b.atr)
         for b in bars
@@ -144,4 +190,31 @@ async def bulk_insert_daily_bars(
     if not rows:
         return
     async with pool.acquire() as conn:
-        await conn.executemany(_INSERT_DAILY_SQL, rows)
+        async with conn.transaction():
+            await conn.execute(
+                """
+                CREATE TEMP TABLE _stage_daily (
+                    symbolid  integer,
+                    date      date,
+                    open      numeric(12,4),
+                    high      numeric(12,4),
+                    low       numeric(12,4),
+                    close     numeric(12,4),
+                    volume    bigint,
+                    atr       numeric(12,4)
+                ) ON COMMIT DROP;
+                """
+            )
+            await conn.copy_records_to_table(
+                "_stage_daily",
+                records=rows,
+                columns=["symbolid", "date", "open", "high", "low", "close", "volume", "atr"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO daily (symbolid, date, open, high, low, close, volume, atr)
+                SELECT symbolid, date, open, high, low, close, volume, atr FROM _stage_daily
+                ON CONFLICT (symbolid, date) DO UPDATE SET
+                    atr = EXCLUDED.atr;
+                """
+            )
