@@ -104,6 +104,51 @@ async def _fetch_symbol_for_id(pool: asyncpg.Pool, symbolid: int) -> Optional[st
     return row["symbol"] if row else None
 
 
+async def load_livestream_bars_for_symbol(
+    pool: asyncpg.Pool,
+    symbol: str,
+) -> list[dict]:
+    """
+    All rows currently in ``livestream`` for ``symbol``, sorted by ts.
+    Livestream is truncated at each session boundary, so this is the
+    current session in progress -- exactly what a trader wants to see
+    when hovering a row: today's chart, not historical context.
+
+    Returns dict-shaped rows (JSON-ready) including the enriched columns
+    (vwap, ema9, rvol_cum, relatr) so the client can overlay them later
+    if we want, though the initial candles-only view ignores them.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT l.ts,
+                   l.open, l.high, l.low, l.close,
+                   l.volume,
+                   l.vwap, l.ema9, l.rvol_cum, l.relatr
+              FROM livestream l
+              JOIN monitored_symbols ms USING (symbolid)
+             WHERE ms.symbol = $1
+             ORDER BY l.ts ASC;
+            """,
+            symbol,
+        )
+    return [
+        {
+            "ts": r["ts"].isoformat(),
+            "open": float(r["open"]),
+            "high": float(r["high"]),
+            "low": float(r["low"]),
+            "close": float(r["close"]),
+            "volume": int(r["volume"]),
+            "vwap": float(r["vwap"]) if r["vwap"] is not None else None,
+            "ema9": float(r["ema9"]) if r["ema9"] is not None else None,
+            "rvol_cum": float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
+            "relatr": float(r["relatr"]) if r["relatr"] is not None else None,
+        }
+        for r in rows
+    ]
+
+
 async def load_intraday_bars_for_day(
     pool: asyncpg.Pool,
     day: date,
@@ -215,16 +260,13 @@ async def load_top_relatr(
     """
     Latest livestream row per symbol, top N by RelATR.
 
-    Quality filters applied BEFORE picking "latest per symbol" so a
-    symbol whose latest bar is quiet still ranks on the last bar that
-    actually met the thresholds. Filters are:
+    Quality filters applied BEFORE picking "latest per symbol":
 
-      * volume   >= min_volume  (default 10,000)   -- filter out illiquid ticks
-      * rvol_cum >= min_rvol    (default 2.0)      -- only extended sessions
+      * volume   >= min_volume        (default 10,000)   -- illiquid noise
+      * rvol_cum >= min_rvol          (default 2.0)      -- extended sessions
 
-    order == "desc" -> highest positive relatr first (price extended below
-                       VWAP -- classic reversal-long setup).
-    order == "abs"  -> largest magnitude first regardless of sign.
+    order == "desc" -> highest positive relatr first.
+    order == "abs"  -> largest magnitude first.
     """
     if order not in ("desc", "abs"):
         raise ValueError(f"order must be 'desc' or 'abs', got {order!r}")

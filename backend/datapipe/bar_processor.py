@@ -26,7 +26,7 @@ from backend.database.writers import insert_intraday_bar, insert_livestream_bar
 from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.schemas import Bar1m
 from backend.datapipe.session_state import SessionStore, SymbolSessionState
-from backend.datapipe.time_utils import et_time_slot, session_date_et, to_helsinki
+from backend.datapipe.time_utils import et_time_slot, session_date_et
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,9 @@ async def process_bar(
         baseline_history_sum=st.baseline_history_sum,
     )
 
-    logger.info("[calc] %s %s ", bar.symbol, to_helsinki(bar.ts).strftime("%H:%M"))
+    # Per-bar trace disabled -- too noisy at real symbol counts. Re-add a
+    # ``logger.debug(...)`` here (and flip the module logger to DEBUG) if
+    # you ever need to spot-check calculations again.
 
     # Persist first; the sink shouldn't see a bar that isn't in the DB yet.
     await asyncio.gather(

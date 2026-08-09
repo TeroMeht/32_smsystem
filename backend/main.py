@@ -22,15 +22,27 @@ from datetime import date
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from backend.common.logging_config import setup_app_logging
 from backend.core.config import settings
 from backend.database.pool import get_pool
-from backend.database.readers import load_top_relatr
+from backend.database.readers import (
+    load_livestream_bars_for_symbol,
+    load_top_relatr,
+)
 from backend.datapipe import pipeline
 from backend.datapipe.replay import ReplayConfig
+
+
+# ---------------------------------------------------------------------------
+# Frontend directory -- resolved from this file's location so it works no
+# matter what CWD uvicorn is launched from.
+# Layout: <repo>/frontend/*.html  (UI files, decoupled from backend code).
+# ---------------------------------------------------------------------------
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +66,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="32_smsystem", lifespan=lifespan)
+
+# Serve everything under frontend/ at /ui/ so relatr.html can reference
+# sibling modules with an absolute path (e.g. /ui/chart.js) that survives
+# whatever URL the page itself is served from.
+app.mount("/ui", StaticFiles(directory=FRONTEND_DIR), name="frontend")
 
 
 class ReplayRequest(BaseModel):
@@ -118,10 +135,9 @@ async def api_livestream_top(
     min_rvol: float = Query(2.0, ge=0.0),
 ):
     """
-    Top N symbols by RelATR from the ``livestream`` table, restricted to
-    bars with meaningful liquidity (volume >= min_volume) and relative
-    volume (rvol_cum >= min_rvol). Both filters can be overridden per
-    request; defaults are 10,000 shares and RVOL 2.0.
+    Top N symbols by RelATR from ``livestream``. Filters:
+      * volume    >= min_volume  (default 10,000)
+      * rvol_cum  >= min_rvol    (default 2.0)
     """
     pool = get_pool()
     rows = await load_top_relatr(
@@ -135,155 +151,27 @@ async def api_livestream_top(
     }
 
 
-_RELATR_HTML = """
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>RelATR live</title>
-<style>
-  html, body { margin: 0; padding: 0; background: #0f1115; color: #e6e8ec;
-               font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-  .wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
-  header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; }
-  h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: 0.5px; }
-  .meta { font-size: 12px; color: #8a92a5; }
-  .controls { margin-left: auto; display: flex; gap: 10px; align-items: center;
-              font-size: 12px; color: #8a92a5; }
-  select, input { background: #1a1e26; color: #e6e8ec; border: 1px solid #2a2f3a;
-                  border-radius: 4px; padding: 3px 6px; font-size: 12px; }
-  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid #1e232d; }
-  th { text-align: right; font-size: 11px; color: #8a92a5; font-weight: 500;
-       text-transform: uppercase; letter-spacing: 0.6px; }
-  th:first-child, td:first-child { text-align: left; }
-  tr.updated td { background: rgba(80, 200, 120, 0.08); transition: background 0.9s; }
-  td.pos { color: #6ec48b; }
-  td.neg { color: #d47a7a; }
-  .stale { color: #8a92a5; font-style: italic; }
-</style>
-</head>
-<body>
-<div class="wrap">
-  <header>
-    <h1>Live RelATR</h1>
-    <span class="meta" id="meta">loading&hellip;</span>
-    <div class="controls">
-      Sort:
-      <select id="order">
-        <option value="desc">RelATR desc (below VWAP)</option>
-        <option value="abs">|RelATR| magnitude</option>
-      </select>
-      Rows:
-      <input id="n" type="number" min="1" max="200" value="20" style="width: 60px">
-      Refresh:
-      <select id="interval">
-        <option value="2000">2s</option>
-        <option value="5000" selected>5s</option>
-        <option value="10000">10s</option>
-        <option value="30000">30s</option>
-      </select>
-    </div>
-  </header>
-  <table id="tbl">
-    <thead>
-      <tr>
-        <th>Symbol</th>
-        <th>Time</th>
-        <th>Close</th>
-        <th>VWAP</th>
-        <th>EMA9</th>
-        <th>RVOL</th>
-        <th>RelATR</th>
-        <th>Volume</th>
-      </tr>
-    </thead>
-    <tbody id="body"></tbody>
-  </table>
-</div>
-<script>
-(function () {
-  const bodyEl = document.getElementById('body');
-  const metaEl = document.getElementById('meta');
-  const orderEl = document.getElementById('order');
-  const nEl = document.getElementById('n');
-  const intervalEl = document.getElementById('interval');
-  let last = new Map();  // symbol -> ts, to flash updated rows
-  let timer = null;
-
-  function fmt(v, digits) {
-    if (v === null || v === undefined) return '-';
-    return Number(v).toFixed(digits);
-  }
-  function fmtInt(v) {
-    if (v === null || v === undefined) return '-';
-    return Number(v).toLocaleString();
-  }
-  function fmtTime(iso) {
-    if (!iso) return '-';
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  }
-
-  async function tick() {
-    const n = Number(nEl.value) || 20;
-    const order = orderEl.value;
-    try {
-      const r = await fetch(`/api/livestream/top?n=${n}&order=${order}`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = await r.json();
-      const now = new Date();
-      metaEl.textContent = `${data.rows.length} rows  |  last update ${now.toLocaleTimeString()}`;
-
-      const seen = new Set();
-      const frag = document.createDocumentFragment();
-      for (const row of data.rows) {
-        seen.add(row.symbol);
-        const tr = document.createElement('tr');
-        const changed = last.get(row.symbol) !== row.ts;
-        if (changed) tr.classList.add('updated');
-        last.set(row.symbol, row.ts);
-
-        const rel = row.relatr;
-        const relClass = rel > 0 ? 'pos' : (rel < 0 ? 'neg' : '');
-
-        tr.innerHTML = `
-          <td>${row.symbol}</td>
-          <td>${fmtTime(row.ts)}</td>
-          <td>${fmt(row.close, 2)}</td>
-          <td>${fmt(row.vwap, 2)}</td>
-          <td>${fmt(row.ema9, 2)}</td>
-          <td>${fmt(row.rvol_cum, 2)}</td>
-          <td class="${relClass}">${fmt(row.relatr, 4)}</td>
-          <td>${fmtInt(row.volume)}</td>
-        `;
-        frag.appendChild(tr);
-      }
-      bodyEl.replaceChildren(frag);
-      // prune 'last' map so it doesn't grow across sort changes
-      for (const k of Array.from(last.keys())) if (!seen.has(k)) last.delete(k);
-    } catch (e) {
-      metaEl.innerHTML = `<span class="stale">error: ${e.message}</span>`;
-    }
-  }
-
-  function reschedule() {
-    if (timer) clearInterval(timer);
-    timer = setInterval(tick, Number(intervalEl.value));
-  }
-  orderEl.addEventListener('change', tick);
-  nEl.addEventListener('change', tick);
-  intervalEl.addEventListener('change', reschedule);
-
-  tick();
-  reschedule();
-})();
-</script>
-</body>
-</html>
-"""
+@app.get("/api/livestream/bars/{symbol}")
+async def api_livestream_bars(symbol: str):
+    """
+    Every livestream row currently on disk for the symbol, ordered by ts.
+    Since livestream is truncated at session start, this is the current
+    session in progress -- feeds the frontend candlestick chart on hover.
+    """
+    pool = get_pool()
+    rows = await load_livestream_bars_for_symbol(pool, symbol.upper())
+    return {"symbol": symbol.upper(), "bars": rows}
 
 
-@app.get("/relatr", response_class=HTMLResponse)
+# ---------------------------------------------------------------------------
+# Frontend page -- served from the frontend/ folder as a plain file so
+# main.py stays free of UI markup.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/relatr")
 async def relatr_page():
-    return HTMLResponse(_RELATR_HTML)
+    path = FRONTEND_DIR / "relatr.html"
+    if not path.exists():
+        raise HTTPException(status_code=500, detail=f"UI file missing: {path}")
+    return FileResponse(path, media_type="text/html")

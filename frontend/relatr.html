@@ -1,0 +1,219 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>RelATR live</title>
+<!--
+  Live RelATR dashboard.
+
+  Two concerns on one page, top to bottom:
+    1. Chart (top)  -- rendered by /ui/chart.js. On a table-row click,
+                       the current session's candles for that symbol are
+                       fetched from /api/livestream/bars/{symbol}.
+    2. Table (below) -- polls /api/livestream/top on a user-chosen
+                        interval and shows the current top-N symbols by
+                        RelATR.
+
+  Chart logic lives in a separate ES module so this page stays about
+  layout + table plumbing, and chart internals (candle setup, cache,
+  render pipeline) can evolve without touching this file.
+-->
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #0f1115; color: #e6e8ec;
+               font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
+  header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: 0.5px; }
+  .meta { font-size: 12px; color: #8a92a5; }
+  .controls { margin-left: auto; display: flex; gap: 10px; align-items: center;
+              font-size: 12px; color: #8a92a5; }
+  select, input { background: #1a1e26; color: #e6e8ec; border: 1px solid #2a2f3a;
+                  border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+
+  .chart-wrap { margin-bottom: 22px; border: 1px solid #1e232d; border-radius: 6px;
+                background: #12161d; }
+  .chart-header { display: flex; align-items: baseline; gap: 12px;
+                  padding: 10px 14px; border-bottom: 1px solid #1e232d; }
+  .chart-header h2 { font-size: 14px; margin: 0; }
+  .chart-header .info { font-size: 12px; color: #8a92a5; }
+  #chart { width: 100%; height: 360px; }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid #1e232d; }
+  th { text-align: right; font-size: 11px; color: #8a92a5; font-weight: 500;
+       text-transform: uppercase; letter-spacing: 0.6px; }
+  th:first-child, td:first-child { text-align: left; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover td { background: #17252b; }
+  tbody tr.selected td { background: #1c2a34; }
+  tr.updated td { background: rgba(80, 200, 120, 0.08); transition: background 0.9s; }
+  td.pos { color: #6ec48b; }
+  td.neg { color: #d47a7a; }
+  .stale { color: #8a92a5; font-style: italic; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Live RelATR</h1>
+    <span class="meta" id="meta">loading&hellip;</span>
+    <div class="controls">
+      Sort:
+      <select id="order">
+        <option value="desc">RelATR desc (below VWAP)</option>
+        <option value="abs">|RelATR| magnitude</option>
+      </select>
+      Rows:
+      <input id="n" type="number" min="1" max="200" value="20" style="width: 60px">
+      Refresh:
+      <select id="interval">
+        <option value="2000">2s</option>
+        <option value="5000" selected>5s</option>
+        <option value="10000">10s</option>
+        <option value="30000">30s</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- Chart -- populated on row click by chart.js -->
+  <div class="chart-wrap">
+    <div class="chart-header">
+      <h2 id="chartSymbol">Click a row below to load today's session</h2>
+      <span class="info" id="chartInfo"></span>
+    </div>
+    <div id="chart"></div>
+  </div>
+
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th>Symbol</th>
+        <th>Time</th>
+        <th>Close</th>
+        <th>VWAP</th>
+        <th>EMA9</th>
+        <th>RVOL</th>
+        <th>RelATR</th>
+        <th>Volume</th>
+      </tr>
+    </thead>
+    <tbody id="body"></tbody>
+  </table>
+</div>
+
+<script type="module">
+  import { initChart } from '/ui/chart.js';
+
+  // ---------- client-side filters (edit to tweak the view) ---------------
+  // The backend returns everything that clears its own volume/rvol filters;
+  // the UI decides what's worth showing to the human. RelATR floor lives
+  // here so the threshold can change per-view without touching the DB code.
+  const MIN_RELATR = 0.5;
+
+  // ---------- chart -------------------------------------------------------
+  const chartApi = initChart({
+    containerEl: document.getElementById('chart'),
+    titleEl:     document.getElementById('chartSymbol'),
+    infoEl:      document.getElementById('chartInfo'),
+  });
+
+  // ---------- table polling ----------------------------------------------
+  const bodyEl = document.getElementById('body');
+  const metaEl = document.getElementById('meta');
+  const orderEl = document.getElementById('order');
+  const nEl = document.getElementById('n');
+  const intervalEl = document.getElementById('interval');
+  const lastTsBySymbol = new Map();  // symbol -> ts, to flash updated rows
+  let selectedSymbol = null;         // for cross-poll row highlight
+  let pollTimer = null;
+
+  function fmt(v, digits) {
+    if (v === null || v === undefined) return '-';
+    return Number(v).toFixed(digits);
+  }
+  function fmtInt(v) {
+    if (v === null || v === undefined) return '-';
+    return Number(v).toLocaleString();
+  }
+  function fmtTime(iso) {
+    if (!iso) return '-';
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  async function tick() {
+    const n = Number(nEl.value) || 20;
+    const order = orderEl.value;
+    try {
+      const r = await fetch(`/api/livestream/top?n=${n}&order=${order}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      const now = new Date();
+
+      // UI-side filter: hide rows whose relatr is below the display threshold.
+      const rows = data.rows.filter(r => r.relatr !== null && r.relatr >= MIN_RELATR);
+      metaEl.textContent =
+        `${rows.length} rows (relatr >= ${MIN_RELATR}, ${data.rows.length} received)  |  last update ${now.toLocaleTimeString()}`;
+
+      const seen = new Set();
+      const frag = document.createDocumentFragment();
+      for (const row of rows) {
+        seen.add(row.symbol);
+        const tr = document.createElement('tr');
+        tr.dataset.symbol = row.symbol;
+        const changed = lastTsBySymbol.get(row.symbol) !== row.ts;
+        if (changed) tr.classList.add('updated');
+        lastTsBySymbol.set(row.symbol, row.ts);
+
+        const rel = row.relatr;
+        const relClass = rel > 0 ? 'pos' : (rel < 0 ? 'neg' : '');
+        if (row.symbol === selectedSymbol) tr.classList.add('selected');
+
+        tr.innerHTML = `
+          <td>${row.symbol}</td>
+          <td>${fmtTime(row.ts)}</td>
+          <td>${fmt(row.close, 2)}</td>
+          <td>${fmt(row.vwap, 2)}</td>
+          <td>${fmt(row.ema9, 2)}</td>
+          <td>${fmt(row.rvol_cum, 2)}</td>
+          <td class="${relClass}">${fmt(row.relatr, 4)}</td>
+          <td>${fmtInt(row.volume)}</td>
+        `;
+        frag.appendChild(tr);
+      }
+      bodyEl.replaceChildren(frag);
+      for (const k of Array.from(lastTsBySymbol.keys())) {
+        if (!seen.has(k)) lastTsBySymbol.delete(k);
+      }
+    } catch (e) {
+      metaEl.innerHTML = `<span class="stale">error: ${e.message}</span>`;
+    }
+  }
+
+  function reschedule() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = setInterval(tick, Number(intervalEl.value));
+  }
+  orderEl.addEventListener('change', tick);
+  nEl.addEventListener('change', tick);
+  intervalEl.addEventListener('change', reschedule);
+
+  // Row click -> chart. Delegated so it survives table re-renders.
+  bodyEl.addEventListener('click', (e) => {
+    const tr = e.target.closest('tr');
+    if (!tr || !tr.dataset.symbol) return;
+    selectedSymbol = tr.dataset.symbol;
+    chartApi.load(selectedSymbol);
+    // Update highlight immediately, don't wait for the next poll.
+    for (const row of bodyEl.querySelectorAll('tr')) {
+      row.classList.toggle('selected', row.dataset.symbol === selectedSymbol);
+    }
+  });
+
+  // ---------- boot -------------------------------------------------------
+  tick();
+  reschedule();
+</script>
+</body>
+</html>
