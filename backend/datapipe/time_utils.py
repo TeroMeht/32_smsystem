@@ -19,7 +19,15 @@ from zoneinfo import ZoneInfo
 from backend.core.config import settings
 
 ET = ZoneInfo("America/New_York")
+HELSINKI = ZoneInfo("Europe/Helsinki")
 UTC = timezone.utc
+
+
+def to_helsinki(dt: datetime) -> datetime:
+    """Return dt in Europe/Helsinki (DST-aware). Naive dt is assumed UTC."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(HELSINKI)
 
 
 def effective_today() -> date:

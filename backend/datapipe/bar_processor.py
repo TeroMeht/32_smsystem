@@ -26,7 +26,7 @@ from backend.database.writers import insert_intraday_bar, insert_livestream_bar
 from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.schemas import Bar1m
 from backend.datapipe.session_state import SessionStore, SymbolSessionState
-from backend.datapipe.time_utils import et_time_slot, session_date_et
+from backend.datapipe.time_utils import et_time_slot, session_date_et, to_helsinki
 
 logger = logging.getLogger(__name__)
 
@@ -51,48 +51,15 @@ async def process_bar(
     slot = et_time_slot(bar.ts)
     slot_avg = st.baseline_for_slot(slot)
 
-    # Snapshot the RVOL inputs BEFORE enrichment so the log below reflects
-    # what actually went into the calculation.
-    prior_vol_sum = sum(b.volume for b in st.history)
-    prior_baseline_sum = st.baseline_history_sum
-    today_cum_vol = prior_vol_sum + bar.volume
-    cum_baseline = prior_baseline_sum + slot_avg
-
-    # First bar for this symbol this session -- one-off header log so it's
-    # easy to spot in a mixed-symbol stream.
-    if not st.history:
-        logger.info(
-            "[calc] %s: session opened (session_date=%s, atr=%s, baseline_slots=%d)",
-            bar.symbol, st.session_date, st.atr, len(st.rvol_baseline),
-        )
-
     enriched = enrich_bar(
         new_bar=bar,
         history=st.history,
         atr=st.atr,
         baseline_slot_avg=slot_avg,
-        baseline_history_sum=prior_baseline_sum,
+        baseline_history_sum=st.baseline_history_sum,
     )
 
-    # Per-bar calculation trace. Two-line format keeps it scannable:
-    #   line 1 -- raw inputs the bar arrived with
-    #   line 2 -- the four indicators and the RVOL denominator breakdown
-    et_ts = et_time_slot(bar.ts)
-    logger.info(
-        "[calc] %s %s ET | O=%.4f H=%.4f L=%.4f C=%.4f V=%d "
-        "| today_cum_vol=%d",
-        bar.symbol, et_ts.strftime("%H:%M"),
-        bar.open, bar.high, bar.low, bar.close, bar.volume,
-        int(today_cum_vol),
-    )
-    logger.info(
-        "[calc] %s %s ET | VWAP=%s EMA9=%s RelATR=%s RVOL=%s "
-        "| slot_avg=%.1f prior_sum=%.1f denom=%.1f  atr=%s",
-        bar.symbol, et_ts.strftime("%H:%M"),
-        _fmt(enriched.vwap), _fmt(enriched.ema9),
-        _fmt(enriched.relatr), _fmt(enriched.rvol_cum),
-        slot_avg, prior_baseline_sum, cum_baseline, _fmt(st.atr),
-    )
+    logger.info("[calc] %s %s ", bar.symbol, to_helsinki(bar.ts).strftime("%H:%M"))
 
     # Persist first; the sink shouldn't see a bar that isn't in the DB yet.
     await asyncio.gather(
@@ -112,10 +79,3 @@ async def process_bar(
             logger.exception("bar sink failed for %s @ %s", enriched.symbol, enriched.ts)
 
     return enriched
-
-
-def _fmt(v):
-    """Compact float formatting for the trace log; keeps None readable."""
-    if v is None:
-        return "None"
-    return f"{v:.4f}"

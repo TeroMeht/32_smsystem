@@ -201,6 +201,91 @@ async def last_daily_date(
 
 
 # ---------------------------------------------------------------------------
+# Presentation helpers -- feed the /relatr dashboard poll endpoint.
+# ---------------------------------------------------------------------------
+
+
+async def load_top_relatr(
+    pool: asyncpg.Pool,
+    n: int = 20,
+    order: str = "desc",
+    min_volume: int = 10_000,
+    min_rvol: float = 2.0,
+) -> list[dict]:
+    """
+    Latest livestream row per symbol, top N by RelATR.
+
+    Quality filters applied BEFORE picking "latest per symbol" so a
+    symbol whose latest bar is quiet still ranks on the last bar that
+    actually met the thresholds. Filters are:
+
+      * volume   >= min_volume  (default 10,000)   -- filter out illiquid ticks
+      * rvol_cum >= min_rvol    (default 2.0)      -- only extended sessions
+
+    order == "desc" -> highest positive relatr first (price extended below
+                       VWAP -- classic reversal-long setup).
+    order == "abs"  -> largest magnitude first regardless of sign.
+    """
+    if order not in ("desc", "abs"):
+        raise ValueError(f"order must be 'desc' or 'abs', got {order!r}")
+    order_clause = "ORDER BY relatr DESC NULLS LAST" if order == "desc" else \
+                   "ORDER BY ABS(relatr) DESC NULLS LAST"
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            WITH qualified AS (
+                SELECT l.symbolid,
+                       l.ts,
+                       l.close,
+                       l.vwap,
+                       l.ema9,
+                       l.rvol_cum,
+                       l.relatr,
+                       l.volume
+                  FROM livestream l
+                 WHERE l.relatr   IS NOT NULL
+                   AND l.volume   >= $2
+                   AND l.rvol_cum IS NOT NULL
+                   AND l.rvol_cum >= $3
+            ),
+            latest AS (
+                SELECT DISTINCT ON (q.symbolid)
+                       ms.symbol,
+                       q.symbolid,
+                       q.ts,
+                       q.close,
+                       q.vwap,
+                       q.ema9,
+                       q.rvol_cum,
+                       q.relatr,
+                       q.volume
+                  FROM qualified q
+                  JOIN monitored_symbols ms USING (symbolid)
+                 ORDER BY q.symbolid, q.ts DESC
+            )
+            SELECT * FROM latest
+             {order_clause}
+             LIMIT $1;
+            """,
+            n, min_volume, min_rvol,
+        )
+    return [
+        {
+            "symbol": r["symbol"],
+            "ts": r["ts"].isoformat(),
+            "close": float(r["close"]) if r["close"] is not None else None,
+            "vwap": float(r["vwap"]) if r["vwap"] is not None else None,
+            "ema9": float(r["ema9"]) if r["ema9"] is not None else None,
+            "rvol_cum": float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
+            "relatr": float(r["relatr"]) if r["relatr"] is not None else None,
+            "volume": int(r["volume"]) if r["volume"] is not None else None,
+        }
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Batch readiness -- one query per table instead of one-per-symbol.
 # ---------------------------------------------------------------------------
 

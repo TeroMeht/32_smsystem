@@ -55,9 +55,9 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ReplayConfig:
     day: date            # ET session date to replay
-    speed: float = 1.0   # 1.0 = wall clock, 60.0 = 1 real sec per replay minute, 0 = fastest
-    lookback_days: int = 8  # calendar-day window used to rebuild the baseline
-    sample_sessions: int = 5  # trading sessions averaged into the baseline
+    speed: float         # 1.0 = wall clock, 60.0 = 1 real sec per replay minute, 0 = fastest
+    lookback_days: int   # calendar-day window used to rebuild the baseline
+    sample_sessions: int # trading sessions averaged into the baseline
 
 
 # ---------------------------------------------------------------------------
