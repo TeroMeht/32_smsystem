@@ -16,8 +16,25 @@ from __future__ import annotations
 from datetime import date, datetime, time, timezone
 from zoneinfo import ZoneInfo
 
+from backend.core.config import settings
+
 ET = ZoneInfo("America/New_York")
 UTC = timezone.utc
+
+
+def effective_today() -> date:
+    """
+    The date the pipeline should treat as "today".
+
+      * MODE=live   -> wall-clock date.today()
+      * MODE=replay -> settings.REPLAY_DAY
+
+    Historian, partition planning, and rvol_baseline rebuild all key off
+    this. Replay mode also feeds REPLAY_DAY into the replay driver.
+    """
+    if settings.MODE == "replay":
+        return settings.REPLAY_DAY
+    return date.today()
 
 
 def to_utc(dt: datetime) -> datetime:

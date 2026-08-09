@@ -11,13 +11,13 @@ audit. Reads here are:
   * session bars so far     -- read from ``livestream`` to warm up the
                                per-symbol in-memory history when a live
                                loop restarts mid-session.
-  * rvol baseline lookup    -- avg_cum_volume for (symbolid, bar_time).
+  * rvol baseline lookup    -- per-bar avg_volume for (symbolid, bar_time).
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from typing import Optional
+from typing import Iterable, Optional
 
 import asyncpg
 
@@ -104,22 +104,73 @@ async def _fetch_symbol_for_id(pool: asyncpg.Pool, symbolid: int) -> Optional[st
     return row["symbol"] if row else None
 
 
+async def load_intraday_bars_for_day(
+    pool: asyncpg.Pool,
+    day: date,
+    symbolids: Iterable[int],
+) -> list[Bar1m]:
+    """
+    All ``intraday_bars`` rows for ``day`` (ET session date) whose
+    ``symbolid`` is in ``symbolids``, joined to ``monitored_symbols`` for
+    the ticker string. Ordered by ``ts`` ascending -- so a single
+    ``async for`` gives a chronologically-merged, cross-symbol timeline
+    ready for the replay driver.
+
+    One round trip regardless of how many symbols are in the list.
+    """
+    sids = list(symbolids)
+    if not sids:
+        return []
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT ib.symbolid,
+                   ib.ts,
+                   ib.open,
+                   ib.high,
+                   ib.low,
+                   ib.close,
+                   ib.volume,
+                   ms.symbol
+              FROM intraday_bars ib
+              JOIN monitored_symbols ms ON ms.symbolid = ib.symbolid
+             WHERE ib.symbolid = ANY($1::int[])
+               AND (ib.ts AT TIME ZONE 'America/New_York')::date = $2
+             ORDER BY ib.ts ASC;
+            """,
+            sids, day,
+        )
+    return [
+        Bar1m(
+            symbol=r["symbol"],
+            symbolid=r["symbolid"],
+            ts=r["ts"],
+            open=float(r["open"]),
+            high=float(r["high"]),
+            low=float(r["low"]),
+            close=float(r["close"]),
+            volume=int(r["volume"]),
+        )
+        for r in rows
+    ]
+
+
 async def load_rvol_baseline_for_symbol(
     pool: asyncpg.Pool,
     symbolid: int,
 ) -> dict[time, float]:
     """
-    bar_time -> avg_cum_volume for one symbol's full session grid.
+    bar_time -> per-bar avg_volume for one symbol's full session grid.
 
     Loaded once per symbol at startup and cached in memory; a full session
-    grid is <= ~500 rows so it costs nothing.
+    grid is <= ~960 rows (04:00-20:00 ET at 1-min) so it costs nothing.
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT bar_time, avg_cum_volume FROM rvol_baseline WHERE symbolid = $1;",
+            "SELECT bar_time, avg_volume FROM rvol_baseline WHERE symbolid = $1;",
             symbolid,
         )
-    return {r["bar_time"]: float(r["avg_cum_volume"]) for r in rows}
+    return {r["bar_time"]: float(r["avg_volume"]) for r in rows}
 
 
 async def last_intraday_ts(

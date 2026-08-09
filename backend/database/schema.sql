@@ -75,14 +75,20 @@ CREATE TABLE daily_20260807 PARTITION OF daily
     FOR VALUES FROM ('2026-08-07') TO ('2026-08-08');
 
 
--- 5. rvol_baseline (avg cumulative volume per ticker × 1-min time-of-day slot)
+-- 5. rvol_baseline (per-bar average volume per ticker × 1-min time-of-day slot)
 -- bar_time is in ET (America/New_York) since the session grid is ET-based.
+-- avg_volume is the average of that minute's RAW (per-bar) volume across the
+-- N most-recent trading sessions in the rebuild window -- NOT cumulative.
+-- The live path builds the cumulative denominator on the fly by summing
+-- these per-bar averages across slots as the session progresses; that
+-- way a missing slot contributes 0 but the running sum never drops back
+-- to zero, so RVOL stays defined for the rest of the session.
 CREATE TABLE rvol_baseline (
-    symbolid       integer  NOT NULL REFERENCES monitored_symbols(symbolid),
-    bar_time       time     NOT NULL,
-    avg_cum_volume numeric(16,2) NOT NULL,
-    sample_days    smallint NOT NULL,
-    updated        timestamptz NOT NULL DEFAULT now(),
+    symbolid     integer  NOT NULL REFERENCES monitored_symbols(symbolid),
+    bar_time     time     NOT NULL,
+    avg_volume   numeric(16,2) NOT NULL,
+    sample_days  smallint NOT NULL,
+    updated      timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (symbolid, bar_time)
 );
 

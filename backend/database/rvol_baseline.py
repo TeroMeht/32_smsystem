@@ -1,9 +1,13 @@
 """
 Reads and writes for the ``rvol_baseline`` table.
 
-The baseline stores avg cumulative volume per (symbolid, ET bar_time) --
-the denominator for cumulative RVOL. It's rebuilt from ``intraday_bars``
-at startup (and again before every replay).
+The baseline stores the PER-BAR average volume per (symbolid, ET bar_time)
+across the last N trading sessions. It's the input that the live path
+uses to build a cumulative denominator on the fly: for each incoming bar
+we add the current slot's per-bar average to a running sum, then divide
+today's cum volume by that. A missing slot contributes 0 (its per-bar
+avg was never populated) but the running sum keeps its prior value, so
+RVOL stays defined for the rest of the session.
 
 The rebuild takes two knobs:
 
@@ -17,11 +21,6 @@ The rebuild takes two knobs:
                             lookback window, so on a normal week with
                             lookback_days=8, sample_sessions=5 you get an
                             average over exactly the last 5 trading days.
-
-Why the split: calendar-day windowing alone gives you 3-5 trading days
-depending on the day of week and whether there's a US holiday. The user
-wants a specific number of trading sessions (5), so we fetch/keep a wider
-calendar window and let the SQL pick the freshest N sessions per symbol.
 """
 
 from __future__ import annotations
@@ -35,18 +34,15 @@ logger = logging.getLogger(__name__)
 
 
 # SQL:
-#   1. per_bar   -- for each intraday row, tag it with its ET session_date
-#                   and ET bar_time slot, plus cum_vol for that session.
+#   1. per_bar   -- tag each intraday row with its ET session_date and
+#                   ET bar_time slot. Just projection -- no windowing.
 #   2. sessions_ranked -- rank the distinct session_dates per symbol
-#                         freshest first, using DENSE_RANK so identical
-#                         dates would share a rank (they can't here, but
-#                         it's the semantically right function).
+#                         freshest first.
 #   3. recent    -- keep only sessions where session_rank <= $3
-#                   (i.e. the N most recent trading sessions per symbol).
-#   4. Aggregate: average cum_vol across ONLY those recent sessions and
-#      UPSERT into rvol_baseline. sample_days is now always exactly the
-#      count of recent sessions we found for that symbol (typically N,
-#      less if the symbol has fewer sessions on disk).
+#                   (the N most recent trading sessions per symbol).
+#   4. Aggregate: AVG raw volume across those recent sessions and UPSERT
+#      per (symbolid, bar_time). The result is a per-bar average -- NOT
+#      cumulative -- because the live path accumulates on the fly.
 _REBUILD_SQL = """
     WITH per_bar AS (
         SELECT symbolid,
@@ -56,11 +52,7 @@ _REBUILD_SQL = """
                    EXTRACT(MINUTE FROM (ts AT TIME ZONE 'America/New_York'))::int,
                    0
                ) AS bar_time,
-               SUM(volume) OVER (
-                   PARTITION BY symbolid, (ts AT TIME ZONE 'America/New_York')::date
-                   ORDER BY ts
-                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-               ) AS cum_vol
+               volume
           FROM intraday_bars
          WHERE ts >= $1
            AND ts <  $2
@@ -78,20 +70,20 @@ _REBUILD_SQL = """
           FROM sessions_ranked
          WHERE session_rank <= $3
     )
-    INSERT INTO rvol_baseline (symbolid, bar_time, avg_cum_volume, sample_days, updated)
+    INSERT INTO rvol_baseline (symbolid, bar_time, avg_volume, sample_days, updated)
     SELECT p.symbolid,
            p.bar_time,
-           AVG(p.cum_vol)::numeric(16,2)          AS avg_cum_volume,
+           AVG(p.volume)::numeric(16,2)             AS avg_volume,
            COUNT(DISTINCT p.session_date)::smallint AS sample_days,
-           now()                                   AS updated
+           now()                                    AS updated
       FROM per_bar p
       JOIN recent r
         ON r.symbolid = p.symbolid AND r.session_date = p.session_date
      GROUP BY p.symbolid, p.bar_time
     ON CONFLICT (symbolid, bar_time) DO UPDATE SET
-        avg_cum_volume = EXCLUDED.avg_cum_volume,
-        sample_days    = EXCLUDED.sample_days,
-        updated        = EXCLUDED.updated;
+        avg_volume  = EXCLUDED.avg_volume,
+        sample_days = EXCLUDED.sample_days,
+        updated     = EXCLUDED.updated;
 """
 
 

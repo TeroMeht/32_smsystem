@@ -246,3 +246,510 @@
 [2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TIGO stuck in intraday_insert for 214.5s
 [2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: DOC stuck in intraday_insert for 213.1s
 [2026-08-09 10:03:56] WARNING backend.datapipe.historian: [historian] SLOW worker: TWST stuck in intraday_insert for 211.4s
+[2026-08-09 14:27:40] INFO backend.main: ========================================================================
+[2026-08-09 14:27:40] INFO backend.main: 32_smsystem starting up
+[2026-08-09 14:27:40] INFO backend.main: ========================================================================
+[2026-08-09 14:27:40] INFO backend.datapipe.pipeline: [pipeline] MODE=replay effective_today=2026-08-06
+[2026-08-09 14:27:40] INFO backend.datapipe.pipeline: [pipeline] step 1/5: initializing asyncpg pool
+[2026-08-09 14:27:40] INFO backend.database.pool: [db.pool] connecting to postgresql://postgres:***@localhost:5432/32_smsystem (min=2 max=20)
+[2026-08-09 14:27:41] INFO backend.database.pool: [db.pool] pool created
+[2026-08-09 14:27:41] INFO backend.datapipe.pipeline: [pipeline] step 1/5: pool ready
+[2026-08-09 14:27:41] INFO backend.datapipe.pipeline: [pipeline] step 2/5: pruning partitions older than retention (today=2026-08-06)
+[2026-08-09 14:27:41] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:27:41] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill starting
+[2026-08-09 14:27:41] INFO backend.datapipe.historian: [historian] readiness check for 1 symbols (today=2026-08-06, replay_mode=True)
+[2026-08-09 14:27:41] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:27:41] INFO backend.database.partitions: [db.partitions] ensured 8 intraday_bars + 14 daily partitions
+[2026-08-09 14:27:41] INFO backend.datapipe.historian: [historian] readiness: 0 symbols ready, 1 need daily, 1 need intraday
+[2026-08-09 14:27:41] INFO backend.datapipe.historian: [historian] progress: 1/2 units (daily_rows=10 intraday_rows=0 errors=0)
+[2026-08-09 14:27:42] INFO backend.datapipe.historian: [historian] progress: 2/2 units (daily_rows=10 intraday_rows=2508 errors=0)
+[2026-08-09 14:27:42] INFO backend.datapipe.historian: [historian] fetch complete: 10 daily rows, 2508 intraday rows, 0 errors
+[2026-08-09 14:27:42] INFO backend.datapipe.historian: [historian] rebuilding rvol_baseline (lookback=8d, sample_sessions=5)
+[2026-08-09 14:27:42] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:27:42] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuild complete -- 558 rows now in table
+[2026-08-09 14:27:42] INFO backend.database.rvol_baseline: [db.rvol_baseline] sample_days distribution: {5: 242, 4: 120, 3: 27, 2: 30, 1: 139}
+[2026-08-09 14:27:42] INFO backend.datapipe.historian: [historian] backfill complete
+[2026-08-09 14:27:42] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill complete
+[2026-08-09 14:27:42] INFO backend.datapipe.pipeline: [pipeline] step 4/5: truncating livestream (fresh session)
+[2026-08-09 14:27:42] INFO backend.database.writers: [db.writers] truncated livestream (was 0 rows)
+[2026-08-09 14:27:42] INFO backend.datapipe.pipeline: [pipeline] step 5/5: MODE=replay -- spawning replay task (day=2026-08-06 speed=60.00 lookback=8d sample_sessions=5)
+[2026-08-09 14:27:42] INFO backend.datapipe.pipeline: [pipeline] replay startup complete -- replay running in background
+[2026-08-09 14:27:42] INFO backend.main: 32_smsystem ready -- serving HTTP
+[2026-08-09 14:27:42] INFO backend.datapipe.replay: [replay] ==> starting replay day=2026-08-06 speed=60.00 lookback=8d sample_sessions=5
+[2026-08-09 14:27:42] INFO backend.datapipe.replay: [replay] 1 active symbols
+[2026-08-09 14:27:42] INFO backend.datapipe.replay: [replay] rebuilding rvol_baseline excluding replay day
+[2026-08-09 14:27:42] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:27:42] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuild complete -- 558 rows now in table
+[2026-08-09 14:27:42] INFO backend.database.rvol_baseline: [db.rvol_baseline] sample_days distribution: {5: 242, 4: 120, 3: 27, 2: 30, 1: 139}
+[2026-08-09 14:27:42] INFO backend.database.writers: [db.writers] truncated livestream (was 0 rows)
+[2026-08-09 14:27:42] INFO backend.datapipe.replay: [replay] state primed -- 0 symbols missing ATR, 0 missing rvol baseline
+[2026-08-09 14:27:42] INFO backend.datapipe.replay: [replay] loading intraday_bars for 2026-08-06
+[2026-08-09 14:27:42] INFO backend.datapipe.replay: [replay] timeline: 463 bars across 1 symbols (from ts=2026-08-06T08:01:00+00:00 to 2026-08-06T23:51:00+00:00)
+[2026-08-09 14:31:11] INFO backend.datapipe.replay: [replay] progress: 23 / 463 bars (5.0%) errors=0 ts=2026-08-06T11:30:00+00:00
+[2026-08-09 14:32:26] INFO backend.datapipe.replay: [replay] progress: 46 / 463 bars (9.9%) errors=0 ts=2026-08-06T12:44:00+00:00
+[2026-08-09 14:33:19] INFO backend.datapipe.replay: [replay] progress: 69 / 463 bars (14.9%) errors=0 ts=2026-08-06T13:37:00+00:00
+[2026-08-09 14:33:42] INFO backend.datapipe.replay: [replay] progress: 92 / 463 bars (19.9%) errors=0 ts=2026-08-06T14:00:00+00:00
+[2026-08-09 14:34:06] INFO backend.datapipe.replay: [replay] progress: 115 / 463 bars (24.8%) errors=0 ts=2026-08-06T14:23:00+00:00
+[2026-08-09 14:34:29] INFO backend.datapipe.replay: [replay] progress: 138 / 463 bars (29.8%) errors=0 ts=2026-08-06T14:46:00+00:00
+[2026-08-09 14:34:52] INFO backend.datapipe.replay: [replay] progress: 161 / 463 bars (34.8%) errors=0 ts=2026-08-06T15:09:00+00:00
+[2026-08-09 14:34:59] INFO backend.main: 32_smsystem shutting down
+[2026-08-09 14:34:59] INFO backend.datapipe.pipeline: [pipeline] cancelling livestream task
+[2026-08-09 14:34:59] INFO backend.datapipe.pipeline: [pipeline] closing REST client
+[2026-08-09 14:34:59] INFO backend.datapipe.pipeline: [pipeline] closing DB pool
+[2026-08-09 14:34:59] INFO backend.database.pool: [db.pool] closing pool
+[2026-08-09 14:34:59] INFO backend.database.pool: [db.pool] pool closed
+[2026-08-09 14:34:59] INFO backend.datapipe.pipeline: [pipeline] shutdown complete
+[2026-08-09 14:34:59] INFO backend.main: 32_smsystem shutdown complete
+[2026-08-09 14:35:03] INFO backend.main: ========================================================================
+[2026-08-09 14:35:03] INFO backend.main: 32_smsystem starting up
+[2026-08-09 14:35:03] INFO backend.main: ========================================================================
+[2026-08-09 14:35:03] INFO backend.datapipe.pipeline: [pipeline] MODE=replay effective_today=2026-08-06
+[2026-08-09 14:35:03] INFO backend.datapipe.pipeline: [pipeline] step 1/5: initializing asyncpg pool
+[2026-08-09 14:35:03] INFO backend.database.pool: [db.pool] connecting to postgresql://postgres:***@localhost:5432/32_smsystem (min=2 max=20)
+[2026-08-09 14:35:03] INFO backend.database.pool: [db.pool] pool created
+[2026-08-09 14:35:03] INFO backend.datapipe.pipeline: [pipeline] step 1/5: pool ready
+[2026-08-09 14:35:03] INFO backend.datapipe.pipeline: [pipeline] step 2/5: pruning partitions older than retention (today=2026-08-06)
+[2026-08-09 14:35:03] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:03] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill starting
+[2026-08-09 14:35:03] INFO backend.datapipe.historian: [historian] readiness check for 1 symbols (today=2026-08-06, replay_mode=True)
+[2026-08-09 14:35:03] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:03] INFO backend.database.partitions: [db.partitions] ensured 8 intraday_bars + 14 daily partitions
+[2026-08-09 14:35:03] INFO backend.datapipe.historian: [historian] readiness: 1 symbols ready, 0 need daily, 0 need intraday
+[2026-08-09 14:35:03] INFO backend.datapipe.historian: [historian] nothing to backfill -- all symbols current
+[2026-08-09 14:35:03] INFO backend.datapipe.historian: [historian] rebuilding rvol_baseline (lookback=8d, sample_sessions=5)
+[2026-08-09 14:35:03] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:35:03] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuild complete -- 558 rows now in table
+[2026-08-09 14:35:03] INFO backend.database.rvol_baseline: [db.rvol_baseline] sample_days distribution: {5: 242, 4: 120, 3: 27, 2: 30, 1: 139}
+[2026-08-09 14:35:03] INFO backend.datapipe.historian: [historian] backfill complete
+[2026-08-09 14:35:03] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill complete
+[2026-08-09 14:35:03] INFO backend.datapipe.pipeline: [pipeline] step 4/5: truncating livestream (fresh session)
+[2026-08-09 14:35:03] INFO backend.database.writers: [db.writers] truncated livestream (was 168 rows)
+[2026-08-09 14:35:03] INFO backend.datapipe.pipeline: [pipeline] step 5/5: MODE=replay -- spawning replay task (day=2026-08-06 speed=60.00 lookback=8d sample_sessions=5)
+[2026-08-09 14:35:03] INFO backend.datapipe.pipeline: [pipeline] replay startup complete -- replay running in background
+[2026-08-09 14:35:03] INFO backend.main: 32_smsystem ready -- serving HTTP
+[2026-08-09 14:35:03] INFO backend.datapipe.replay: [replay] ==> starting replay day=2026-08-06 speed=60.00 lookback=8d sample_sessions=5
+[2026-08-09 14:35:03] INFO backend.datapipe.replay: [replay] 1 active symbols
+[2026-08-09 14:35:03] INFO backend.datapipe.replay: [replay] rebuilding rvol_baseline excluding replay day
+[2026-08-09 14:35:03] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:35:03] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuild complete -- 558 rows now in table
+[2026-08-09 14:35:03] INFO backend.database.rvol_baseline: [db.rvol_baseline] sample_days distribution: {5: 242, 4: 120, 3: 27, 2: 30, 1: 139}
+[2026-08-09 14:35:03] INFO backend.database.writers: [db.writers] truncated livestream (was 0 rows)
+[2026-08-09 14:35:03] INFO backend.datapipe.replay: [replay] state primed -- 0 symbols missing ATR, 0 missing rvol baseline
+[2026-08-09 14:35:03] INFO backend.datapipe.replay: [replay] loading intraday_bars for 2026-08-06
+[2026-08-09 14:35:03] INFO backend.datapipe.replay: [replay] timeline: 463 bars across 1 symbols (from ts=2026-08-06T08:01:00+00:00 to 2026-08-06T23:51:00+00:00)
+[2026-08-09 14:35:22] INFO backend.main: 32_smsystem shutting down
+[2026-08-09 14:35:22] INFO backend.datapipe.pipeline: [pipeline] cancelling livestream task
+[2026-08-09 14:35:22] INFO backend.datapipe.pipeline: [pipeline] closing REST client
+[2026-08-09 14:35:22] INFO backend.datapipe.pipeline: [pipeline] closing DB pool
+[2026-08-09 14:35:22] INFO backend.database.pool: [db.pool] closing pool
+[2026-08-09 14:35:22] INFO backend.database.pool: [db.pool] pool closed
+[2026-08-09 14:35:22] INFO backend.datapipe.pipeline: [pipeline] shutdown complete
+[2026-08-09 14:35:22] INFO backend.main: 32_smsystem shutdown complete
+[2026-08-09 14:35:25] INFO backend.main: ========================================================================
+[2026-08-09 14:35:25] INFO backend.main: 32_smsystem starting up
+[2026-08-09 14:35:25] INFO backend.main: ========================================================================
+[2026-08-09 14:35:25] INFO backend.datapipe.pipeline: [pipeline] MODE=replay effective_today=2026-08-06
+[2026-08-09 14:35:25] INFO backend.datapipe.pipeline: [pipeline] step 1/5: initializing asyncpg pool
+[2026-08-09 14:35:25] INFO backend.database.pool: [db.pool] connecting to postgresql://postgres:***@localhost:5432/32_smsystem (min=2 max=20)
+[2026-08-09 14:35:25] INFO backend.database.pool: [db.pool] pool created
+[2026-08-09 14:35:25] INFO backend.datapipe.pipeline: [pipeline] step 1/5: pool ready
+[2026-08-09 14:35:25] INFO backend.datapipe.pipeline: [pipeline] step 2/5: pruning partitions older than retention (today=2026-08-06)
+[2026-08-09 14:35:25] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:25] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill starting
+[2026-08-09 14:35:25] INFO backend.datapipe.historian: [historian] readiness check for 1 symbols (today=2026-08-06, replay_mode=True)
+[2026-08-09 14:35:25] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:25] INFO backend.database.partitions: [db.partitions] ensured 8 intraday_bars + 14 daily partitions
+[2026-08-09 14:35:25] INFO backend.datapipe.historian: [historian] readiness: 1 symbols ready, 0 need daily, 0 need intraday
+[2026-08-09 14:35:25] INFO backend.datapipe.historian: [historian] nothing to backfill -- all symbols current
+[2026-08-09 14:35:25] INFO backend.datapipe.historian: [historian] rebuilding rvol_baseline (lookback=8d, sample_sessions=5)
+[2026-08-09 14:35:25] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:35:25] ERROR backend.datapipe.pipeline: [pipeline] startup FAILED -- releasing resources
+Traceback (most recent call last):
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\pipeline.py", line 78, in startup_live
+    await backfill_all_symbols(pool, _rest, today, replay_mode=(mode == "replay"))
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\historian.py", line 206, in backfill_all_symbols
+    await rvol_baseline_db.rebuild(
+    ...<3 lines>...
+    )
+  File "C:\codebase\dev\32_smsystem\backend\database\rvol_baseline.py", line 112, in rebuild
+    await conn.execute(
+    ...<4 lines>...
+    )
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 352, in execute
+    _, status, _ = await self._execute(
+                   ^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1864, in _execute
+    result, _ = await self.__execute(
+                ^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1961, in __execute
+    result, stmt = await self._do_execute(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 2004, in _do_execute
+    stmt = await self._get_statement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 432, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "asyncpg\\protocol\\protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedColumnError: column "avg_volume" of relation "rvol_baseline" does not exist
+[2026-08-09 14:35:25] INFO backend.database.pool: [db.pool] closing pool
+[2026-08-09 14:35:25] INFO backend.database.pool: [db.pool] pool closed
+[2026-08-09 14:35:25] INFO backend.main: 32_smsystem shutting down
+[2026-08-09 14:35:25] INFO backend.datapipe.pipeline: [pipeline] closing DB pool
+[2026-08-09 14:35:25] INFO backend.datapipe.pipeline: [pipeline] shutdown complete
+[2026-08-09 14:35:25] INFO backend.main: 32_smsystem shutdown complete
+[2026-08-09 14:35:34] INFO backend.main: ========================================================================
+[2026-08-09 14:35:34] INFO backend.main: 32_smsystem starting up
+[2026-08-09 14:35:34] INFO backend.main: ========================================================================
+[2026-08-09 14:35:34] INFO backend.datapipe.pipeline: [pipeline] MODE=replay effective_today=2026-08-06
+[2026-08-09 14:35:34] INFO backend.datapipe.pipeline: [pipeline] step 1/5: initializing asyncpg pool
+[2026-08-09 14:35:34] INFO backend.database.pool: [db.pool] connecting to postgresql://postgres:***@localhost:5432/32_smsystem (min=2 max=20)
+[2026-08-09 14:35:35] INFO backend.database.pool: [db.pool] pool created
+[2026-08-09 14:35:35] INFO backend.datapipe.pipeline: [pipeline] step 1/5: pool ready
+[2026-08-09 14:35:35] INFO backend.datapipe.pipeline: [pipeline] step 2/5: pruning partitions older than retention (today=2026-08-06)
+[2026-08-09 14:35:35] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:35] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill starting
+[2026-08-09 14:35:35] INFO backend.datapipe.historian: [historian] readiness check for 1 symbols (today=2026-08-06, replay_mode=True)
+[2026-08-09 14:35:35] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:35] INFO backend.database.partitions: [db.partitions] ensured 8 intraday_bars + 14 daily partitions
+[2026-08-09 14:35:35] INFO backend.datapipe.historian: [historian] readiness: 1 symbols ready, 0 need daily, 0 need intraday
+[2026-08-09 14:35:35] INFO backend.datapipe.historian: [historian] nothing to backfill -- all symbols current
+[2026-08-09 14:35:35] INFO backend.datapipe.historian: [historian] rebuilding rvol_baseline (lookback=8d, sample_sessions=5)
+[2026-08-09 14:35:35] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:35:35] ERROR backend.datapipe.pipeline: [pipeline] startup FAILED -- releasing resources
+Traceback (most recent call last):
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\pipeline.py", line 78, in startup_live
+    await backfill_all_symbols(pool, _rest, today, replay_mode=(mode == "replay"))
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\historian.py", line 206, in backfill_all_symbols
+    await rvol_baseline_db.rebuild(
+    ...<3 lines>...
+    )
+  File "C:\codebase\dev\32_smsystem\backend\database\rvol_baseline.py", line 112, in rebuild
+    await conn.execute(
+    ...<4 lines>...
+    )
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 352, in execute
+    _, status, _ = await self._execute(
+                   ^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1864, in _execute
+    result, _ = await self.__execute(
+                ^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1961, in __execute
+    result, stmt = await self._do_execute(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 2004, in _do_execute
+    stmt = await self._get_statement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 432, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "asyncpg\\protocol\\protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedColumnError: column "avg_volume" of relation "rvol_baseline" does not exist
+[2026-08-09 14:35:35] INFO backend.database.pool: [db.pool] closing pool
+[2026-08-09 14:35:35] INFO backend.database.pool: [db.pool] pool closed
+[2026-08-09 14:35:35] INFO backend.main: 32_smsystem shutting down
+[2026-08-09 14:35:35] INFO backend.datapipe.pipeline: [pipeline] closing DB pool
+[2026-08-09 14:35:35] INFO backend.datapipe.pipeline: [pipeline] shutdown complete
+[2026-08-09 14:35:35] INFO backend.main: 32_smsystem shutdown complete
+[2026-08-09 14:35:43] INFO backend.main: ========================================================================
+[2026-08-09 14:35:43] INFO backend.main: 32_smsystem starting up
+[2026-08-09 14:35:43] INFO backend.main: ========================================================================
+[2026-08-09 14:35:43] INFO backend.datapipe.pipeline: [pipeline] MODE=replay effective_today=2026-08-06
+[2026-08-09 14:35:43] INFO backend.datapipe.pipeline: [pipeline] step 1/5: initializing asyncpg pool
+[2026-08-09 14:35:43] INFO backend.database.pool: [db.pool] connecting to postgresql://postgres:***@localhost:5432/32_smsystem (min=2 max=20)
+[2026-08-09 14:35:44] INFO backend.database.pool: [db.pool] pool created
+[2026-08-09 14:35:44] INFO backend.datapipe.pipeline: [pipeline] step 1/5: pool ready
+[2026-08-09 14:35:44] INFO backend.datapipe.pipeline: [pipeline] step 2/5: pruning partitions older than retention (today=2026-08-06)
+[2026-08-09 14:35:44] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:44] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill starting
+[2026-08-09 14:35:44] INFO backend.datapipe.historian: [historian] readiness check for 1 symbols (today=2026-08-06, replay_mode=True)
+[2026-08-09 14:35:44] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:44] INFO backend.database.partitions: [db.partitions] ensured 8 intraday_bars + 14 daily partitions
+[2026-08-09 14:35:44] INFO backend.datapipe.historian: [historian] readiness: 1 symbols ready, 0 need daily, 0 need intraday
+[2026-08-09 14:35:44] INFO backend.datapipe.historian: [historian] nothing to backfill -- all symbols current
+[2026-08-09 14:35:44] INFO backend.datapipe.historian: [historian] rebuilding rvol_baseline (lookback=8d, sample_sessions=5)
+[2026-08-09 14:35:44] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:35:44] ERROR backend.datapipe.pipeline: [pipeline] startup FAILED -- releasing resources
+Traceback (most recent call last):
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\pipeline.py", line 78, in startup_live
+    await backfill_all_symbols(pool, _rest, today, replay_mode=(mode == "replay"))
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\historian.py", line 206, in backfill_all_symbols
+    await rvol_baseline_db.rebuild(
+    ...<3 lines>...
+    )
+  File "C:\codebase\dev\32_smsystem\backend\database\rvol_baseline.py", line 112, in rebuild
+    await conn.execute(
+    ...<4 lines>...
+    )
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 352, in execute
+    _, status, _ = await self._execute(
+                   ^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1864, in _execute
+    result, _ = await self.__execute(
+                ^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1961, in __execute
+    result, stmt = await self._do_execute(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 2004, in _do_execute
+    stmt = await self._get_statement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 432, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "asyncpg\\protocol\\protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedColumnError: column "avg_volume" of relation "rvol_baseline" does not exist
+[2026-08-09 14:35:44] INFO backend.database.pool: [db.pool] closing pool
+[2026-08-09 14:35:44] INFO backend.database.pool: [db.pool] pool closed
+[2026-08-09 14:35:44] INFO backend.main: 32_smsystem shutting down
+[2026-08-09 14:35:44] INFO backend.datapipe.pipeline: [pipeline] closing DB pool
+[2026-08-09 14:35:44] INFO backend.datapipe.pipeline: [pipeline] shutdown complete
+[2026-08-09 14:35:44] INFO backend.main: 32_smsystem shutdown complete
+[2026-08-09 14:35:58] INFO backend.main: ========================================================================
+[2026-08-09 14:35:58] INFO backend.main: 32_smsystem starting up
+[2026-08-09 14:35:58] INFO backend.main: ========================================================================
+[2026-08-09 14:35:58] INFO backend.datapipe.pipeline: [pipeline] MODE=replay effective_today=2026-08-06
+[2026-08-09 14:35:58] INFO backend.datapipe.pipeline: [pipeline] step 1/5: initializing asyncpg pool
+[2026-08-09 14:35:58] INFO backend.database.pool: [db.pool] connecting to postgresql://postgres:***@localhost:5432/32_smsystem (min=2 max=20)
+[2026-08-09 14:35:59] INFO backend.database.pool: [db.pool] pool created
+[2026-08-09 14:35:59] INFO backend.datapipe.pipeline: [pipeline] step 1/5: pool ready
+[2026-08-09 14:35:59] INFO backend.datapipe.pipeline: [pipeline] step 2/5: pruning partitions older than retention (today=2026-08-06)
+[2026-08-09 14:35:59] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:59] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill starting
+[2026-08-09 14:35:59] INFO backend.datapipe.historian: [historian] readiness check for 1 symbols (today=2026-08-06, replay_mode=True)
+[2026-08-09 14:35:59] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:35:59] INFO backend.database.partitions: [db.partitions] ensured 8 intraday_bars + 14 daily partitions
+[2026-08-09 14:35:59] INFO backend.datapipe.historian: [historian] readiness: 1 symbols ready, 0 need daily, 0 need intraday
+[2026-08-09 14:35:59] INFO backend.datapipe.historian: [historian] nothing to backfill -- all symbols current
+[2026-08-09 14:35:59] INFO backend.datapipe.historian: [historian] rebuilding rvol_baseline (lookback=8d, sample_sessions=5)
+[2026-08-09 14:35:59] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:35:59] ERROR backend.datapipe.pipeline: [pipeline] startup FAILED -- releasing resources
+Traceback (most recent call last):
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\pipeline.py", line 78, in startup_live
+    await backfill_all_symbols(pool, _rest, today, replay_mode=(mode == "replay"))
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\historian.py", line 206, in backfill_all_symbols
+    await rvol_baseline_db.rebuild(
+    ...<3 lines>...
+    )
+  File "C:\codebase\dev\32_smsystem\backend\database\rvol_baseline.py", line 112, in rebuild
+    await conn.execute(
+    ...<4 lines>...
+    )
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 352, in execute
+    _, status, _ = await self._execute(
+                   ^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1864, in _execute
+    result, _ = await self.__execute(
+                ^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1961, in __execute
+    result, stmt = await self._do_execute(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 2004, in _do_execute
+    stmt = await self._get_statement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 432, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "asyncpg\\protocol\\protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedColumnError: column "avg_volume" of relation "rvol_baseline" does not exist
+[2026-08-09 14:35:59] INFO backend.database.pool: [db.pool] closing pool
+[2026-08-09 14:35:59] INFO backend.database.pool: [db.pool] pool closed
+[2026-08-09 14:35:59] INFO backend.main: 32_smsystem shutting down
+[2026-08-09 14:35:59] INFO backend.datapipe.pipeline: [pipeline] closing DB pool
+[2026-08-09 14:35:59] INFO backend.datapipe.pipeline: [pipeline] shutdown complete
+[2026-08-09 14:35:59] INFO backend.main: 32_smsystem shutdown complete
+[2026-08-09 14:36:12] INFO backend.main: ========================================================================
+[2026-08-09 14:36:12] INFO backend.main: 32_smsystem starting up
+[2026-08-09 14:36:12] INFO backend.main: ========================================================================
+[2026-08-09 14:36:12] INFO backend.datapipe.pipeline: [pipeline] MODE=replay effective_today=2026-08-06
+[2026-08-09 14:36:12] INFO backend.datapipe.pipeline: [pipeline] step 1/5: initializing asyncpg pool
+[2026-08-09 14:36:12] INFO backend.database.pool: [db.pool] connecting to postgresql://postgres:***@localhost:5432/32_smsystem (min=2 max=20)
+[2026-08-09 14:36:12] INFO backend.database.pool: [db.pool] pool created
+[2026-08-09 14:36:12] INFO backend.datapipe.pipeline: [pipeline] step 1/5: pool ready
+[2026-08-09 14:36:12] INFO backend.datapipe.pipeline: [pipeline] step 2/5: pruning partitions older than retention (today=2026-08-06)
+[2026-08-09 14:36:12] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:36:12] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill starting
+[2026-08-09 14:36:12] INFO backend.datapipe.historian: [historian] readiness check for 1 symbols (today=2026-08-06, replay_mode=True)
+[2026-08-09 14:36:12] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:36:12] INFO backend.database.partitions: [db.partitions] ensured 8 intraday_bars + 14 daily partitions
+[2026-08-09 14:36:12] INFO backend.datapipe.historian: [historian] readiness: 1 symbols ready, 0 need daily, 0 need intraday
+[2026-08-09 14:36:12] INFO backend.datapipe.historian: [historian] nothing to backfill -- all symbols current
+[2026-08-09 14:36:12] INFO backend.datapipe.historian: [historian] rebuilding rvol_baseline (lookback=8d, sample_sessions=5)
+[2026-08-09 14:36:12] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:36:12] ERROR backend.datapipe.pipeline: [pipeline] startup FAILED -- releasing resources
+Traceback (most recent call last):
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\pipeline.py", line 78, in startup_live
+    await backfill_all_symbols(pool, _rest, today, replay_mode=(mode == "replay"))
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\historian.py", line 206, in backfill_all_symbols
+    await rvol_baseline_db.rebuild(
+    ...<3 lines>...
+    )
+  File "C:\codebase\dev\32_smsystem\backend\database\rvol_baseline.py", line 112, in rebuild
+    await conn.execute(
+    ...<4 lines>...
+    )
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 352, in execute
+    _, status, _ = await self._execute(
+                   ^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1864, in _execute
+    result, _ = await self.__execute(
+                ^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1961, in __execute
+    result, stmt = await self._do_execute(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 2004, in _do_execute
+    stmt = await self._get_statement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 432, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "asyncpg\\protocol\\protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedColumnError: column "avg_volume" of relation "rvol_baseline" does not exist
+[2026-08-09 14:36:12] INFO backend.database.pool: [db.pool] closing pool
+[2026-08-09 14:36:12] INFO backend.database.pool: [db.pool] pool closed
+[2026-08-09 14:36:12] INFO backend.main: 32_smsystem shutting down
+[2026-08-09 14:36:12] INFO backend.datapipe.pipeline: [pipeline] closing DB pool
+[2026-08-09 14:36:12] INFO backend.datapipe.pipeline: [pipeline] shutdown complete
+[2026-08-09 14:36:12] INFO backend.main: 32_smsystem shutdown complete
+[2026-08-09 14:36:28] INFO backend.main: ========================================================================
+[2026-08-09 14:36:28] INFO backend.main: 32_smsystem starting up
+[2026-08-09 14:36:28] INFO backend.main: ========================================================================
+[2026-08-09 14:36:28] INFO backend.datapipe.pipeline: [pipeline] MODE=replay effective_today=2026-08-06
+[2026-08-09 14:36:28] INFO backend.datapipe.pipeline: [pipeline] step 1/5: initializing asyncpg pool
+[2026-08-09 14:36:28] INFO backend.database.pool: [db.pool] connecting to postgresql://postgres:***@localhost:5432/32_smsystem (min=2 max=20)
+[2026-08-09 14:36:28] INFO backend.database.pool: [db.pool] pool created
+[2026-08-09 14:36:28] INFO backend.datapipe.pipeline: [pipeline] step 1/5: pool ready
+[2026-08-09 14:36:28] INFO backend.datapipe.pipeline: [pipeline] step 2/5: pruning partitions older than retention (today=2026-08-06)
+[2026-08-09 14:36:28] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:36:28] INFO backend.datapipe.pipeline: [pipeline] step 3/5: historian backfill starting
+[2026-08-09 14:36:28] INFO backend.datapipe.historian: [historian] readiness check for 1 symbols (today=2026-08-06, replay_mode=True)
+[2026-08-09 14:36:28] INFO backend.database.partitions: [db.partitions] no partitions past retention (nothing to drop)
+[2026-08-09 14:36:28] INFO backend.database.partitions: [db.partitions] ensured 8 intraday_bars + 14 daily partitions
+[2026-08-09 14:36:28] INFO backend.datapipe.historian: [historian] readiness: 1 symbols ready, 0 need daily, 0 need intraday
+[2026-08-09 14:36:28] INFO backend.datapipe.historian: [historian] nothing to backfill -- all symbols current
+[2026-08-09 14:36:28] INFO backend.datapipe.historian: [historian] rebuilding rvol_baseline (lookback=8d, sample_sessions=5)
+[2026-08-09 14:36:28] INFO backend.database.rvol_baseline: [db.rvol_baseline] rebuilding: calendar window [2026-07-29, 2026-08-06) -> take 5 most recent trading sessions per symbol
+[2026-08-09 14:36:28] ERROR backend.datapipe.pipeline: [pipeline] startup FAILED -- releasing resources
+Traceback (most recent call last):
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\pipeline.py", line 78, in startup_live
+    await backfill_all_symbols(pool, _rest, today, replay_mode=(mode == "replay"))
+  File "C:\codebase\dev\32_smsystem\backend\datapipe\historian.py", line 206, in backfill_all_symbols
+    await rvol_baseline_db.rebuild(
+    ...<3 lines>...
+    )
+  File "C:\codebase\dev\32_smsystem\backend\database\rvol_baseline.py", line 112, in rebuild
+    await conn.execute(
+    ...<4 lines>...
+    )
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 352, in execute
+    _, status, _ = await self._execute(
+                   ^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1864, in _execute
+    result, _ = await self.__execute(
+                ^^^^^^^^^^^^^^^^^^^^^
+    ...<7 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 1961, in __execute
+    result, stmt = await self._do_execute(
+                   ^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 2004, in _do_execute
+    stmt = await self._get_statement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "C:\Users\termehta\AppData\Local\Programs\Python\Python313\Lib\site-packages\asyncpg\connection.py", line 432, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+    )
+    ^
+  File "asyncpg\\protocol\\protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedColumnError: column "avg_volume" of relation "rvol_baseline" does not exist
+[2026-08-09 14:36:28] INFO backend.database.pool: [db.pool] closing pool
+[2026-08-09 14:36:28] INFO backend.database.pool: [db.pool] pool closed
+[2026-08-09 14:36:28] INFO backend.main: 32_smsystem shutting down
+[2026-08-09 14:36:28] INFO backend.datapipe.pipeline: [pipeline] closing DB pool
+[2026-08-09 14:36:28] INFO backend.datapipe.pipeline: [pipeline] shutdown complete
+[2026-08-09 14:36:28] INFO backend.main: 32_smsystem shutdown complete

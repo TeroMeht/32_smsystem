@@ -12,8 +12,10 @@ inheriting a value nobody wrote down.
 Env file location:  C:/codebase/env-repo/32_smsystem.env
 """
 
+from datetime import date
 from pathlib import Path
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -35,6 +37,28 @@ class Settings(BaseSettings):
     # --- Concurrency for HTTP calls ---
     HTTP_WORKERS_TICKER_DETAILS: int
     HTTP_WORKERS_GROUPED_DAILY:  int
+
+    # --- Runtime mode ---
+    # MODE = "live"    : historian aligns to wall-clock today, WS livestream
+    #                    opens in the background.
+    # MODE = "replay"  : historian treats REPLAY_DAY as "today", RVOL baseline
+    #                    is built from sessions strictly before REPLAY_DAY,
+    #                    and startup runs the replay driver INSTEAD of the WS.
+    # REPLAY_* fields are still required in live mode -- pick placeholder
+    # values you're comfortable with, they simply aren't consulted.
+    MODE: str
+    REPLAY_DAY: date
+    REPLAY_SPEED: float
+    REPLAY_LOOKBACK_DAYS: int
+    REPLAY_SAMPLE_SESSIONS: int
+
+    @model_validator(mode="after")
+    def _normalize_mode(self) -> "Settings":
+        mode = self.MODE.lower()
+        if mode not in ("live", "replay"):
+            raise ValueError(f"MODE must be 'live' or 'replay' (got {self.MODE!r})")
+        self.MODE = mode
+        return self
 
     class Config:
         ENV_REPO = Path("C:/codebase/env-repo")

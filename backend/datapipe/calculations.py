@@ -173,22 +173,33 @@ def next_rvol_cum(
     history_volume_sum: float,
     baseline_slot_avg: float,
     baseline_history_sum: float,
-) -> Optional[float]:
+) -> float:
     """
     Cumulative RVOL:
-        rvol = (cum_vol_today) / (cum_avg_vol_baseline_up_to_this_slot)
 
-    Caller passes the running cumulative sums so we don't re-sum on every bar.
+        rvol = (today's cum volume through this bar)
+             / (sum of per-bar baselines through this slot)
 
-    Returns None when the baseline denominator is 0 (early in the session
-    before any samples exist, or unknown ticker) so callers can distinguish
-    "no baseline yet" from "baseline says nothing traded".
+    ``rvol_baseline.avg_volume`` is a PER-BAR average across the last N
+    trading sessions. The cumulative denominator is built on the fly by
+    summing those per-bar averages as the session progresses -- exactly
+    like 22 did. Consequences:
+
+      * A missing slot (no baseline row for that ET minute) contributes
+        0 to the running sum, so the denominator stays flat for that
+        minute but never drops. RVOL stays defined from that bar forward.
+      * At the very start of a session, before any baseline has been
+        accumulated, the denominator can be 0 -- in that case we return
+        0.0 (matching 22) rather than None. Once the first slot with
+        baseline data lands, RVOL is real and stays real.
+
+    Callers pass the running sums so we don't recompute them per bar.
     """
     cum_vol_today = history_volume_sum + float(new_bar_volume)
-    cum_avg_baseline = baseline_history_sum + float(baseline_slot_avg)
-    if cum_avg_baseline <= 0:
-        return None
-    return round(cum_vol_today / cum_avg_baseline, 4)
+    cum_baseline = baseline_history_sum + float(baseline_slot_avg or 0.0)
+    if cum_baseline <= 0:
+        return 0.0
+    return round(cum_vol_today / cum_baseline, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +220,11 @@ def enrich_bar(
     ``history`` is the list of session bars strictly BEFORE ``new_bar``, in
     chronological order. Callers (livestream / replay) maintain a small
     in-memory deque per symbol so this stays cheap.
+
+    ``baseline_slot_avg`` is the per-bar avg for THIS bar's ET slot.
+    ``baseline_history_sum`` is the running sum of per-bar baselines from
+    every prior bar this session -- so together they form the cumulative
+    denominator for RVOL. See ``next_rvol_cum`` for semantics.
     """
     vwap = next_vwap(new_bar, history)
     new_bar.vwap = vwap

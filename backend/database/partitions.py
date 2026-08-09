@@ -80,8 +80,11 @@ async def drop_old_partitions(pool: asyncpg.Pool, today: date) -> None:
     no row-by-row delete). Safe to run on every startup; missing tables are
     simply ignored (IF EXISTS).
     """
-    intraday_cutoff = today - timedelta(days=INTRADAY_RETENTION_DAYS)
-    daily_cutoff = today - timedelta(days=DAILY_RETENTION_DAYS)
+    # Retention semantics: "N-day retention" means we keep N dates
+    # inclusive of today -- so the earliest kept partition is
+    # today - (N - 1), and anything strictly before that gets dropped.
+    intraday_cutoff = today - timedelta(days=INTRADAY_RETENTION_DAYS - 1)
+    daily_cutoff = today - timedelta(days=DAILY_RETENTION_DAYS - 1)
     dropped: list[str] = []
 
     async with pool.acquire() as conn:

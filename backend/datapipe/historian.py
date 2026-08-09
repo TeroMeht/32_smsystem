@@ -118,23 +118,24 @@ async def backfill_all_symbols(
     rest: RestClient,
     today: date,
     concurrency: int = 10,
+    replay_mode: bool = False,
 ) -> None:
     """
     End-to-end warmup for every active symbol.
 
     Readiness gate up front: one batched query per table gives us
     ``symbolid -> last date/ts`` for both daily and intraday. Per symbol we
-    then classify into four buckets:
+    classify into two buckets (daily / intraday) and only symbols with an
+    actual gap hit the network.
 
-      * ``daily_ok``     -- last_d >= today - DAILY_STALE_DAYS
-      * ``daily_missing`` (fetch)
-      * ``intraday_ok``  -- last_ts is within INTRADAY_STALE_SECONDS of now
-      * ``intraday_missing`` (fetch)
+    Freshness semantics differ by mode:
 
-    Symbols in both "_ok" buckets are skipped entirely -- no REST calls,
-    no DB writes. Only symbols with actual gaps hit the network. This
-    means a restart 30 seconds after a clean shutdown finishes in seconds
-    instead of minutes.
+      * live   -- intraday is fresh if last_ts is within
+                  INTRADAY_STALE_SECONDS of wall-clock UTC now.
+      * replay -- intraday is fresh if ``session_date_et(last_ts) >= today``
+                  (i.e. we already have data covering the target replay
+                  day). The wall-clock check is meaningless when ``today``
+                  is deliberately a past date.
     """
     symbol_map = await load_active_symbol_map(pool)
     if not symbol_map:
@@ -142,14 +143,14 @@ async def backfill_all_symbols(
         return
 
     total = len(symbol_map)
-    logger.info("[historian] readiness check for %d symbols (today=%s)",
-                total, today.isoformat())
+    logger.info("[historian] readiness check for %d symbols (today=%s, replay_mode=%s)",
+                total, today.isoformat(), replay_mode)
 
-    # 1. Retention prune + partition creation
+    # 1. Retention prune + partition creation.
     await drop_old_partitions(pool, today)
     intraday_start = today - timedelta(days=INTRADAY_BACKFILL_DAYS)
-    intraday_days = [today - timedelta(days=i) for i in range(INTRADAY_BACKFILL_DAYS + 1)]
-    daily_days = [today - timedelta(days=i) for i in range(DAILY_BACKFILL_DAYS + 1)]
+    intraday_days = [today - timedelta(days=i) for i in range(INTRADAY_RETENTION_DAYS)]
+    daily_days = [today - timedelta(days=i) for i in range(DAILY_RETENTION_DAYS)]
     await ensure_partitions_for_dates(pool, intraday_days, daily_days)
 
     # 2. Batched readiness snapshot -- two aggregate queries, no per-symbol I/O
@@ -169,13 +170,19 @@ async def backfill_all_symbols(
         last_ts = intraday_map.get(symbolid)
         if last_ts is None:
             intraday_todo.append((symbol, symbolid, intraday_start))
-        elif (now_utc - last_ts).total_seconds() >= INTRADAY_STALE_SECONDS:
-            # Refetch just the window from last-known onwards (already inside
-            # the retention cutoff, so the row-filter below keeps it clean).
-            have_date = session_date_et(last_ts)
-            need_from = have_date if have_date >= intraday_start else intraday_start
-            intraday_todo.append((symbol, symbolid, need_from))
-        # else: intraday_ok -- skipped entirely
+            continue
+
+        have_date = session_date_et(last_ts)
+        if replay_mode:
+            # Ready iff we already cover the target day
+            if have_date < today:
+                need_from = have_date if have_date >= intraday_start else intraday_start
+                intraday_todo.append((symbol, symbolid, need_from))
+        else:
+            # Live: use the wall-clock freshness threshold
+            if (now_utc - last_ts).total_seconds() >= INTRADAY_STALE_SECONDS:
+                need_from = have_date if have_date >= intraday_start else intraday_start
+                intraday_todo.append((symbol, symbolid, need_from))
 
     logger.info(
         "[historian] readiness: %d symbols ready, %d need daily, %d need intraday",

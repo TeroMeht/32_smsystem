@@ -116,19 +116,36 @@ def test_relatr_positive_when_vwap_above_close():
 
 
 # ---------------------------------------------------------------------------
-# RVOL cumulative: None when baseline unknown, else ratio
+# RVOL cumulative: baseline is per-bar; denominator is a running sum of
+# per-bar baselines through the current slot. Same shape as 22.
 # ---------------------------------------------------------------------------
 
-def test_rvol_unknown_baseline_returns_none():
-    assert next_rvol_cum(1000, 5000.0, 0.0, 0.0) is None
+def test_rvol_zero_baseline_returns_zero():
+    # Start of session, no baseline accumulated yet and current slot is 0.
+    # 22 returns 0.0 in that case (not None) so downstream can safely divide.
+    assert next_rvol_cum(1000, 5000.0, 0.0, 0.0) == 0.0
 
 
-def test_rvol_matches_ratio():
-    # today so far = 5000 + new 1000 = 6000
-    # baseline so far = 500 (history) + 250 (this slot) = 750
-    # ratio = 6000 / 750 = 8.0
-    r = next_rvol_cum(1000, 5000.0, 250.0, 500.0)
-    assert r == pytest.approx(8.0, abs=1e-4)
+def test_rvol_ratio_matches_manual_sum():
+    # today cum = 5000 (history) + 1000 (this bar) = 6000
+    # baseline denominator = 2000 (prior slots summed) + 400 (this slot) = 2400
+    # ratio = 6000 / 2400 = 2.5
+    r = next_rvol_cum(1000, 5000.0, 400.0, 2000.0)
+    assert r == pytest.approx(2.5, abs=1e-4)
+
+
+def test_rvol_stays_defined_when_current_slot_has_no_baseline():
+    # Current ET slot has no baseline data (per-bar avg = 0), but the
+    # running sum from prior bars is > 0. RVOL should stay defined.
+    # today cum = 5000 + 1000 = 6000; baseline = 2000 + 0 = 2000; r = 3.0
+    r = next_rvol_cum(1000, 5000.0, 0.0, 2000.0)
+    assert r == pytest.approx(3.0, abs=1e-4)
+
+
+def test_rvol_none_baseline_treated_as_zero():
+    r = next_rvol_cum(1000, 5000.0, None, 2000.0)  # type: ignore[arg-type]
+    # baseline sum = 2000, denom = 2000, r = 6000/2000 = 3.0
+    assert r == pytest.approx(3.0, abs=1e-4)
 
 
 # ---------------------------------------------------------------------------
@@ -141,12 +158,16 @@ def test_enrich_bar_populates_all_indicators(session_bars):
         new_bar,
         history=session_bars,
         atr=1.5,
-        baseline_slot_avg=1000.0,
-        baseline_history_sum=4000.0,
+        baseline_slot_avg=1000.0,       # per-bar baseline for THIS slot
+        baseline_history_sum=4000.0,    # sum of per-bar baselines for prior slots
     )
     assert out.vwap is not None
     assert out.ema9 is not None
     assert out.relatr is not None
     assert out.rvol_cum is not None
-    # RelATR sign check: VWAP - close over atr
+    # RelATR sign check: (VWAP - close) / atr
     assert out.relatr == pytest.approx(round((out.vwap - new_bar.close) / 1.5, 4))
+    # RVOL: today's cum vol / (prior baselines + this slot's baseline)
+    expected_today_cum = sum(b.volume for b in session_bars) + new_bar.volume
+    expected_baseline = 4000.0 + 1000.0
+    assert out.rvol_cum == pytest.approx(round(expected_today_cum / expected_baseline, 4))
