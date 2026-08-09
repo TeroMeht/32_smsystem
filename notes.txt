@@ -1,0 +1,2 @@
+# To run stock universe process
+C:\codebase\dev\32_smsystem> python -m backend.stock_universe.run

@@ -1,0 +1,17 @@
+# Virtual environment
+.venv/
+
+# Environment files (kept centrally in C:/codebase/env-repo/<project>.env;
+# any local .env is treated as a stray and ignored).
+.env
+.env.*
+!.env.sample
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Generated data + logs (per-subsystem)
+backend/**/data/
+backend/**/logs/
