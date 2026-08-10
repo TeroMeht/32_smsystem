@@ -31,7 +31,7 @@ from backend.datapipe.historian import backfill_all_symbols
 from backend.datapipe.livestream import run_livestream
 from backend.datapipe.replay import ReplayConfig, run_replay
 from backend.datapipe.rest_client import RestClient
-from backend.datapipe.time_utils import effective_today
+from backend.datapipe.time_utils import effective_today, helsinki_hhmm_to_utc
 
 logger = logging.getLogger(__name__)
 
@@ -82,16 +82,23 @@ async def startup_live(sink: BarSink | None = None) -> None:
         await truncate_livestream(pool)
 
         if mode == "replay":
+            start_raw = (settings.REPLAY_START_TIME or "").strip()
+            start_utc = (
+                helsinki_hhmm_to_utc(settings.REPLAY_DAY, start_raw)
+                if start_raw else None
+            )
             cfg = ReplayConfig(
                 day=settings.REPLAY_DAY,
                 speed=settings.REPLAY_SPEED,
                 lookback_days=settings.REPLAY_LOOKBACK_DAYS,
                 sample_sessions=settings.REPLAY_SAMPLE_SESSIONS,
+                start_utc=start_utc,
             )
             logger.info(
                 "[pipeline] step 5/5: MODE=replay -- spawning replay task "
-                "(day=%s speed=%.2f lookback=%dd sample_sessions=%d)",
-                cfg.day, cfg.speed, cfg.lookback_days, cfg.sample_sessions,
+                "(day=%s start=%s speed=%.2f lookback=%dd sample_sessions=%d)",
+                cfg.day, start_raw or "session-open (00:00 HKI)",
+                cfg.speed, cfg.lookback_days, cfg.sample_sessions,
             )
             _live_task = asyncio.create_task(run_replay(pool, _rest, cfg, sink=sink))
             logger.info("[pipeline] replay startup complete -- replay running in background")

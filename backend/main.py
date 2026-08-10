@@ -75,9 +75,9 @@ app.mount("/ui", StaticFiles(directory=FRONTEND_DIR), name="frontend")
 
 class ReplayRequest(BaseModel):
     day: date            # ET session date to replay, e.g. "2026-08-07"
-    speed: float = 60.0  # default 60x = 1 replay minute per real second
-    lookback_days: int = 8
-    sample_sessions: int = 5
+    speed: float # default 60x = 1 replay minute per real second
+    lookback_days: int
+    sample_sessions: int
 
 
 @app.post("/replay")

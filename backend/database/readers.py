@@ -258,12 +258,17 @@ async def load_top_relatr(
     min_rvol: float = 2.0,
 ) -> list[dict]:
     """
-    Latest livestream row per symbol, top N by RelATR.
+    ACTUAL latest livestream row per symbol, filtered by quality thresholds,
+    top N by RelATR.
 
-    Quality filters applied BEFORE picking "latest per symbol":
+    Order matters: pick the latest bar per symbol FIRST, then apply
+    filters. Doing the filter first would let a symbol that spiked hours
+    ago (and has since gone quiet) stay pinned to that old bar -- users
+    expect the table to reflect the current situation, not the last time
+    a symbol was interesting.
 
       * volume   >= min_volume        (default 10,000)   -- illiquid noise
-      * rvol_cum >= min_rvol          (default 2.0)      -- extended sessions
+      * rvol_cum >= min_rvol          (default 2.0)      -- extended session
 
     order == "desc" -> highest positive relatr first.
     order == "abs"  -> largest magnitude first.
@@ -276,8 +281,10 @@ async def load_top_relatr(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
-            WITH qualified AS (
-                SELECT l.symbolid,
+            WITH latest AS (
+                SELECT DISTINCT ON (l.symbolid)
+                       ms.symbol,
+                       l.symbolid,
                        l.ts,
                        l.close,
                        l.vwap,
@@ -286,27 +293,14 @@ async def load_top_relatr(
                        l.relatr,
                        l.volume
                   FROM livestream l
-                 WHERE l.relatr   IS NOT NULL
-                   AND l.volume   >= $2
-                   AND l.rvol_cum IS NOT NULL
-                   AND l.rvol_cum >= $3
-            ),
-            latest AS (
-                SELECT DISTINCT ON (q.symbolid)
-                       ms.symbol,
-                       q.symbolid,
-                       q.ts,
-                       q.close,
-                       q.vwap,
-                       q.ema9,
-                       q.rvol_cum,
-                       q.relatr,
-                       q.volume
-                  FROM qualified q
                   JOIN monitored_symbols ms USING (symbolid)
-                 ORDER BY q.symbolid, q.ts DESC
+                 ORDER BY l.symbolid, l.ts DESC
             )
             SELECT * FROM latest
+             WHERE relatr   IS NOT NULL
+               AND volume   >= $2
+               AND rvol_cum IS NOT NULL
+               AND rvol_cum >= $3
              {order_clause}
              LIMIT $1;
             """,

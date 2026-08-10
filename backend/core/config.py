@@ -44,10 +44,15 @@ class Settings(BaseSettings):
     # MODE = "replay"  : historian treats REPLAY_DAY as "today", RVOL baseline
     #                    is built from sessions strictly before REPLAY_DAY,
     #                    and startup runs the replay driver INSTEAD of the WS.
+    # REPLAY_START_TIME  : "" -> start from beginning of the replay day.
+    #                      "HH:MM" 24-hour, interpreted as HELSINKI local time
+    #                      on REPLAY_DAY; bars before this instant are skipped.
+    #                      (e.g. "16:30", NOT "4:30 PM".)
     # REPLAY_* fields are still required in live mode -- pick placeholder
     # values you're comfortable with, they simply aren't consulted.
     MODE: str
     REPLAY_DAY: date
+    REPLAY_START_TIME: str
     REPLAY_SPEED: float
     REPLAY_LOOKBACK_DAYS: int
     REPLAY_SAMPLE_SESSIONS: int
@@ -58,6 +63,23 @@ class Settings(BaseSettings):
         if mode not in ("live", "replay"):
             raise ValueError(f"MODE must be 'live' or 'replay' (got {self.MODE!r})")
         self.MODE = mode
+
+        # REPLAY_START_TIME must be empty or strict 24-hour "HH:MM".
+        # Reject 12-hour formats like "4:30 PM" -- users have to think in
+        # the same convention as everything else on this system.
+        s = (self.REPLAY_START_TIME or "").strip()
+        if s:
+            ok = False
+            parts = s.split(":")
+            if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+                hh, mm = int(parts[0]), int(parts[1])
+                if 0 <= hh <= 23 and 0 <= mm <= 59:
+                    ok = True
+            if not ok:
+                raise ValueError(
+                    "REPLAY_START_TIME must be empty or strict 24-hour 'HH:MM' "
+                    f"(e.g. '16:30'), got {self.REPLAY_START_TIME!r}"
+                )
         return self
 
     class Config:

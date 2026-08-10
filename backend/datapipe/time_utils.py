@@ -30,6 +30,17 @@ def to_helsinki(dt: datetime) -> datetime:
     return dt.astimezone(HELSINKI)
 
 
+def helsinki_hhmm_to_utc(day: date, hhmm: str) -> datetime:
+    """
+    Take a strict 24-hour "HH:MM" string interpreted as Helsinki local
+    time on ``day`` and return the corresponding UTC datetime (tz-aware).
+    DST handled automatically via ZoneInfo("Europe/Helsinki").
+    """
+    h_str, m_str = hhmm.split(":")
+    hki_dt = datetime(day.year, day.month, day.day, int(h_str), int(m_str), 0, tzinfo=HELSINKI)
+    return hki_dt.astimezone(UTC)
+
+
 def effective_today() -> date:
     """
     The date the pipeline should treat as "today".

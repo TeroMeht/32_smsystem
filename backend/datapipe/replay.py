@@ -32,7 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 import asyncpg
@@ -58,6 +58,10 @@ class ReplayConfig:
     speed: float         # 1.0 = wall clock, 60.0 = 1 real sec per replay minute, 0 = fastest
     lookback_days: int   # calendar-day window used to rebuild the baseline
     sample_sessions: int # trading sessions averaged into the baseline
+    # Optional -- when set, bars earlier than this UTC instant are skipped.
+    # VWAP/EMA/RVOL start accumulating from this point, as if a trader
+    # turned on the system at that moment.
+    start_utc: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------
@@ -140,13 +144,25 @@ async def run_replay(
     # 4. Load the day's bars in one shot, already sorted by ts across all symbols
     logger.info("[replay] loading intraday_bars for %s", cfg.day)
     timeline = await load_intraday_bars_for_day(pool, cfg.day, symbol_map.values())
-    total = len(timeline)
-    if total == 0:
+    if not timeline:
         logger.warning(
             "[replay] no rows in intraday_bars for day=%s -- did the historian run for that day?",
             cfg.day,
         )
         return
+
+    if cfg.start_utc is not None:
+        before = len(timeline)
+        timeline = [b for b in timeline if b.ts >= cfg.start_utc]
+        logger.info(
+            "[replay] start_utc=%s: dropped %d bars before that cutoff",
+            cfg.start_utc.isoformat(), before - len(timeline),
+        )
+        if not timeline:
+            logger.warning("[replay] no bars at or after start_utc -- nothing to play")
+            return
+
+    total = len(timeline)
     distinct_syms = len({b.symbolid for b in timeline})
     logger.info("[replay] timeline: %d bars across %d symbols (from ts=%s to %s)",
                 total, distinct_syms, timeline[0].ts.isoformat(), timeline[-1].ts.isoformat())

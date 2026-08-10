@@ -20,6 +20,21 @@
  */
 
 export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000 }) {
+  // Both the axis tick labels and the crosshair tooltip need explicit
+  // formatters -- otherwise lightweight-charts renders the numeric `time`
+  // (unix seconds) in UTC on the axis, which desynchs against the table
+  // that uses browser-local time. These two formatters push everything
+  // to the browser's local timezone (Helsinki for the trader).
+  const tickFmt = (unixSec) =>
+    new Date(unixSec * 1000).toLocaleTimeString([], {
+      hour: '2-digit', minute: '2-digit',
+    });
+  const crosshairFmt = (unixSec) =>
+    new Date(unixSec * 1000).toLocaleString([], {
+      month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+
   const chart = LightweightCharts.createChart(containerEl, {
     layout: { background: { color: '#12161d' }, textColor: '#c8ccd6' },
     grid: {
@@ -31,6 +46,10 @@ export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000 })
       borderColor: '#2a2f3a',
       timeVisible: true,
       secondsVisible: false,
+      tickMarkFormatter: tickFmt,
+    },
+    localization: {
+      timeFormatter: crosshairFmt,
     },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   });
@@ -38,6 +57,21 @@ export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000 })
     upColor: '#6ec48b', downColor: '#d47a7a',
     borderUpColor: '#6ec48b', borderDownColor: '#d47a7a',
     wickUpColor: '#6ec48b', wickDownColor: '#d47a7a',
+  });
+
+  // Indicator overlays. Each is its own series so lightweight-charts can
+  // interpolate cleanly and so we can toggle/style them independently.
+  const vwapLine = chart.addLineSeries({
+    color: '#d47a7a',     // red -- session VWAP
+    lineWidth: 1,
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+  const ema9Line = chart.addLineSeries({
+    color: '#6aa7ff',     // blue -- EMA9
+    lineWidth: 1,
+    priceLineVisible: false,
+    lastValueVisible: false,
   });
 
   // Fit to container width; keep in sync on resize.
@@ -77,12 +111,29 @@ export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000 })
 
   function _render(bars) {
     // lightweight-charts wants time as unix seconds (UTC).
-    const series = bars.map(b => ({
-      time: Math.floor(new Date(b.ts).getTime() / 1000),
+    const toSec = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+
+    const candleSeries = bars.map(b => ({
+      time: toSec(b.ts),
       open: b.open, high: b.high, low: b.low, close: b.close,
     }));
-    candles.setData(series);
+    // Indicator series: skip bars where the value is missing so
+    // lightweight-charts draws a gap rather than a spurious 0.
+    const vwapSeries = bars
+      .filter(b => b.vwap !== null && b.vwap !== undefined)
+      .map(b => ({ time: toSec(b.ts), value: b.vwap }));
+    const ema9Series = bars
+      .filter(b => b.ema9 !== null && b.ema9 !== undefined)
+      .map(b => ({ time: toSec(b.ts), value: b.ema9 }));
+
+    candles.setData(candleSeries);
+    vwapLine.setData(vwapSeries);
+    ema9Line.setData(ema9Series);
+    // Refit BOTH axes -- otherwise switching from a $700 stock to an $8
+    // stock leaves the price axis pinned to the old range and forces the
+    // user to zoom/pan manually.
     chart.timeScale().fitContent();
+    chart.priceScale('right').applyOptions({ autoScale: true });
   }
 
   return { load };
