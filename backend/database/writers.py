@@ -60,6 +60,75 @@ async def insert_livestream_bar(pool: asyncpg.Pool, bar: Bar1m) -> None:
         )
 
 
+async def bulk_insert_livestream_bars(
+    pool: asyncpg.Pool,
+    bars: Sequence[Bar1m],
+) -> None:
+    """
+    Bulk-insert already-enriched bars into livestream. Used by the
+    livestream priming step at boot: today's already-occurred REST bars
+    are enriched (VWAP/EMA9/RelATR/RVOL) in one pass and dropped in via
+    COPY -> temp -> INSERT ON CONFLICT for speed.
+
+    Same COPY-into-temp pattern as bulk_insert_intraday_bars. Duplicate
+    (symbolid, ts) rows update indicator columns, matching the live
+    single-row upsert.
+    """
+    if not bars:
+        return
+    rows = [
+        (b.symbolid, b.ts,
+         b.open, b.high, b.low, b.close, b.volume,
+         b.vwap, b.ema9, b.rvol_cum, b.relatr)
+        for b in bars
+    ]
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                CREATE TEMP TABLE _stage_livestream (
+                    symbolid  integer,
+                    ts        timestamptz,
+                    open      numeric(12,4),
+                    high      numeric(12,4),
+                    low       numeric(12,4),
+                    close     numeric(12,4),
+                    volume    bigint,
+                    vwap      numeric(12,4),
+                    ema9      numeric(12,4),
+                    rvol_cum  numeric(8,4),
+                    relatr    numeric(8,4)
+                ) ON COMMIT DROP;
+                """
+            )
+            await conn.copy_records_to_table(
+                "_stage_livestream",
+                records=rows,
+                columns=["symbolid", "ts", "open", "high", "low", "close", "volume",
+                         "vwap", "ema9", "rvol_cum", "relatr"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO livestream
+                    (symbolid, ts, open, high, low, close, volume,
+                     vwap, ema9, rvol_cum, relatr)
+                SELECT symbolid, ts, open, high, low, close, volume,
+                       vwap, ema9, rvol_cum, relatr
+                  FROM _stage_livestream
+                ON CONFLICT (symbolid, ts) DO UPDATE SET
+                    open = EXCLUDED.open,
+                    high = EXCLUDED.high,
+                    low = EXCLUDED.low,
+                    close = EXCLUDED.close,
+                    volume = EXCLUDED.volume,
+                    vwap = EXCLUDED.vwap,
+                    ema9 = EXCLUDED.ema9,
+                    rvol_cum = EXCLUDED.rvol_cum,
+                    relatr = EXCLUDED.relatr;
+                """
+            )
+
+
 async def truncate_livestream(pool: asyncpg.Pool) -> None:
     """Called at session boundary / process start so livestream = today only."""
     async with pool.acquire() as conn:

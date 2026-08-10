@@ -18,7 +18,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import asyncpg
@@ -30,48 +31,98 @@ from backend.database.readers import (
     load_latest_atr_map,
     load_rvol_baseline_for_symbol,
 )
+from backend.database.writers import bulk_insert_livestream_bars
 from backend.datapipe.bar_processor import BarSink, process_bar
+from backend.datapipe.calculations import enrich_bar
+from backend.datapipe.rest_client import RestClient
 from backend.datapipe.schemas import AggregateMinuteMessage, Bar1m
 from backend.datapipe.session_state import SessionStore
+from backend.datapipe.time_utils import et_time_slot, session_date_et, to_helsinki
 
 logger = logging.getLogger(__name__)
 
 
-# Massive WS URL is served under the base host, path /stocks. We accept
-# either a full ws:// URL in POLYGON_BASE_URL or an https:// one and
-# rewrite the scheme.
-def _ws_url() -> str:
-    base = settings.POLYGON_BASE_URL.rstrip("/")
-    if base.startswith("https://"):
-        base = "wss://" + base[len("https://"):]
-    elif base.startswith("http://"):
-        base = "ws://" + base[len("http://"):]
-    return f"{base}/stocks"
 
 
-async def _prime_state(
+async def _prime_livestream(
     pool: asyncpg.Pool,
+    rest: RestClient,
     store: SessionStore,
     symbol_map: dict[str, int],
+    concurrency: int = 10,
 ) -> None:
-    """Load ATR + rvol baseline into per-symbol session state before we open the socket."""
-    logger.info("[livestream] priming per-symbol state (ATR + rvol baseline) for %d symbols", len(symbol_map))
+    """
+    Bootstrap the livestream with today's already-occurred bars.
+
+    Runs EVERY startup, unconditionally, for EVERY monitored symbol -- so
+    any gaps left by a prior WS session (missed minutes, disconnects) get
+    filled by a fresh REST snapshot. Livestream is truncated first (by
+    pipeline) so we're writing into a clean table.
+
+    For each symbol we fetch today's 1-min bars via REST, walk them
+    through ``enrich_bar`` in ts order, and bulk-insert the enriched
+    result. In-memory session state is populated in the same pass so the
+    WS consumer picks up from a correct accumulator.
+
+    intraday_bars is NOT touched -- historian owns that table.
+    """
+    logger.info("priming livestream from REST for %d symbols", len(symbol_map))
+    today_et = session_date_et(datetime.now(timezone.utc))
+
+    # ATR + baseline: cheap per-symbol reads, needed before enrichment.
     atr_map = await load_latest_atr_map(pool)
     missing_atr = 0
     missing_baseline = 0
     for sym, sid in symbol_map.items():
         baseline = await load_rvol_baseline_for_symbol(pool, sid)
-        from datetime import date
-        st = store.get_or_init(sym, sid, date.today())
+        st = store.get_or_init(sym, sid, today_et)
         st.atr = atr_map.get(sid)
         st.rvol_baseline = baseline
         if st.atr is None:
             missing_atr += 1
         if not baseline:
             missing_baseline += 1
+
+    # REST fetch today's bars per symbol, bounded parallelism.
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _fetch(sym: str, sid: int) -> tuple[str, int, list[Bar1m]]:
+        async with sem:
+            raw = await rest.fetch_intraday_bars(sym, today_et)
+            return sym, sid, [b.to_bar1m(symbol=sym, symbolid=sid) for b in raw]
+
+    fetch_results = await asyncio.gather(*[
+        _fetch(sym, sid) for sym, sid in symbol_map.items()
+    ])
+    logger.info("REST fetch complete -- enriching + writing to livestream")
+
+    # Enrich each symbol's bars in ts order (bars come sorted by REST) and
+    # accumulate into memory state. All enriched bars get bulk-inserted.
+    all_enriched: list[Bar1m] = []
+    for sym, sid, bars in fetch_results:
+        if not bars:
+            continue
+        st = store.get_or_init(sym, sid, today_et)
+        for bar in bars:
+            slot = et_time_slot(bar.ts)
+            slot_avg = st.baseline_for_slot(slot)
+            enriched = enrich_bar(
+                new_bar=bar,
+                history=st.history,
+                atr=st.atr,
+                baseline_slot_avg=slot_avg,
+                baseline_history_sum=st.baseline_history_sum,
+            )
+            st.history.append(enriched)
+            st.baseline_history_sum += slot_avg
+            all_enriched.append(enriched)
+
+    if all_enriched:
+        await bulk_insert_livestream_bars(pool, all_enriched)
+
     logger.info(
-        "[livestream] state primed -- %d symbols missing ATR, %d missing rvol baseline",
-        missing_atr, missing_baseline,
+        "livestream primed -- session=%s bars=%d missing_ATR=%d missing_baseline=%d",
+        today_et.isoformat(), len(all_enriched), missing_atr, missing_baseline,
     )
 
 
@@ -87,22 +138,19 @@ async def _consume(
     we filter to ev=="AM" and dispatch each. Anything unparseable is logged
     but never terminates the loop.
 
-    Emits three flavors of INFO log so an operator can tell the stream is alive:
+    Signals of life:
       * First bar per symbol -- confirms subscription for that ticker.
-      * Every 60s -- rolling bar-rate summary (bars/sec + total).
       * Ignored / dropped events -- warning level.
+
+    Full-fidelity raw-frame audit lives in logs/am_stream.log via am_logger.
     """
-    bar_count = 0
-    drop_count = 0
     seen_symbols: set[str] = set()
-    last_summary = time.monotonic()
-    SUMMARY_INTERVAL = 60.0  # seconds
 
     async for raw in ws:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            logger.warning("[livestream] non-JSON frame dropped: %r", raw[:200])
+            logger.warning("non-JSON frame dropped: %r", raw[:200])
             continue
 
         events = payload if isinstance(payload, list) else [payload]
@@ -110,91 +158,78 @@ async def _consume(
             if not isinstance(ev, dict):
                 continue
             ev_type = ev.get("ev")
+
+            # Polygon sends non-AM control frames on the same stream:
+            #   * one {"ev":"status","status":"auth_success",...} after auth
+            #   * one {"ev":"status","status":"success","message":"subscribed to: AM.<sym>"}
+            #     per subscribed symbol (so 1700+ of these right after subscribe)
+            # These are handshake noise, not data -- log at DEBUG and skip.
             if ev_type != "AM":
-                # status / auth_success / etc. -- log at INFO so the operator
-                # can confirm auth/subscribe handshakes actually succeeded.
-                logger.info("[livestream] control frame: %s", ev)
+                logger.debug("control frame: %s", ev)
                 continue
+
             try:
                 msg = AggregateMinuteMessage.model_validate(ev)
             except Exception:
-                logger.warning("[livestream] AM validation failed: %s", ev)
-                drop_count += 1
+                logger.warning("AM validation failed: %s", ev)
                 continue
+
             sid = symbol_map.get(msg.sym)
             if sid is None:
-                drop_count += 1
                 continue
             bar: Bar1m = msg.to_bar1m(symbolid=sid)
             try:
                 await process_bar(pool, store, bar, sink=sink)
-                bar_count += 1
                 if bar.symbol not in seen_symbols:
                     seen_symbols.add(bar.symbol)
                     logger.info(
-                        "[livestream] first bar for %s @ %s (close=%.4f vol=%d)",
-                        bar.symbol, bar.ts.isoformat(), bar.close, bar.volume,
+                        " %s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d VWAP_bar=%s",
+                        bar.symbol,
+                        to_helsinki(bar.ts).strftime("%H:%M"),
+                        bar.open, bar.high, bar.low, bar.close, bar.volume,
+                        f"{bar.vwap_bar:.4f}" if bar.vwap_bar is not None else "-",
                     )
             except Exception:
-                logger.exception("[livestream] process_bar failed for %s @ %s", bar.symbol, bar.ts)
-                drop_count += 1
-
-        now = time.monotonic()
-        if now - last_summary >= SUMMARY_INTERVAL:
-            rate = bar_count / (now - last_summary)
-            logger.info(
-                "[livestream] rolling summary: bars=%d rate=%.2f/s dropped=%d subscribed=%d seen=%d",
-                bar_count, rate, drop_count, len(symbol_map), len(seen_symbols),
-            )
-            bar_count = 0
-            drop_count = 0
-            last_summary = now
+                logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)
 
 
 async def run_livestream(
     pool: asyncpg.Pool,
+    rest: RestClient,
     sink: Optional[BarSink] = None,
-    reconnect_initial_delay: float = 1.0,
-    reconnect_max_delay: float = 30.0,
 ) -> None:
     """
-    Long-running task the FastAPI lifespan spawns. Never returns until
-    cancelled. Reconnects with exponential backoff on transport errors;
-    validation / per-message errors are non-fatal (see ``_consume``).
+    Fetch today's already-occurred bars via REST + enrich + write to
+    livestream, then open the WS and extend it minute by minute.
+
+    intraday_bars is not touched by this path -- historian owns it.
+    NO reconnect: any failure propagates to the caller.
     """
     store = SessionStore()
-    url = _ws_url()
-    delay = reconnect_initial_delay
+    url = settings.POLYGON_WS_URL
 
-    logger.info("[livestream] task started (target URL=%s)", url)
+    logger.info("task started (target URL=%s)", url)
 
-    while True:
-        try:
-            symbol_map = await load_active_symbol_map(pool)
-            if not symbol_map:
-                logger.warning("[livestream] no active symbols -- sleeping 60s and retrying")
-                await asyncio.sleep(60)
-                continue
+    try:
+        symbol_map = await load_active_symbol_map(pool)
+        if not symbol_map:
+            raise RuntimeError("no active symbols in monitored_symbols -- refusing to connect")
 
-            await _prime_state(pool, store, symbol_map)
+        await _prime_livestream(pool, rest, store, symbol_map)
 
-            logger.info("[livestream] connecting to %s (%d symbols)", url, len(symbol_map))
-            async with websockets.connect(url, max_size=8 * 1024 * 1024) as ws:
-                logger.info("[livestream] WS connected -- sending auth")
-                await ws.send(json.dumps({"action": "auth", "params": settings.POLYGON_API_KEY}))
-                sub_params = ",".join(f"AM.{s}" for s in symbol_map.keys())
-                logger.info("[livestream] sending subscribe for %d symbols", len(symbol_map))
-                await ws.send(json.dumps({"action": "subscribe", "params": sub_params}))
-                logger.info("[livestream] subscribe request sent -- entering consume loop")
+        logger.info("connecting to %s (%d symbols)", url, len(symbol_map))
+        async with websockets.connect(url, max_size=8 * 1024 * 1024) as ws:
+            await ws.send(json.dumps({"action": "auth", "params": settings.POLYGON_API_KEY}))
+            sub_params = ",".join(f"AM.{s}" for s in symbol_map.keys())
+            await ws.send(json.dumps({"action": "subscribe", "params": sub_params}))
 
-                delay = reconnect_initial_delay
-                await _consume(ws, pool, store, symbol_map, sink)
-                logger.warning("[livestream] socket closed cleanly -- reconnecting")
+            await _consume(ws, pool, store, symbol_map, sink)
 
-        except asyncio.CancelledError:
-            logger.info("[livestream] task cancelled -- exiting reconnect loop")
-            raise
-        except Exception:
-            logger.exception("[livestream] connection failure -- reconnecting in %.1fs", delay)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, reconnect_max_delay)
+        logger.warning("socket closed -- run_livestream returning")
+
+    except asyncio.CancelledError:
+        logger.info("task cancelled -- exiting")
+        raise
+    except Exception:
+        logger.exception("livestream failed -- not reconnecting, task will exit")
+        raise

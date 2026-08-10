@@ -24,8 +24,13 @@ class Settings(BaseSettings):
     DATABASE_URL: str
 
     # --- Polygon.io ---
+    # POLYGON_BASE_URL -> REST         e.g. https://api.polygon.io
+    # POLYGON_WS_URL   -> WebSocket    e.g. wss://socket.polygon.io/stocks
+    # Polygon serves the two over DIFFERENT hosts, so we can't derive one
+    # from the other -- both are explicit env values.
     POLYGON_API_KEY: str
     POLYGON_BASE_URL: str
+    POLYGON_WS_URL: str
 
     # --- Stock universe filter thresholds ---
     UNIVERSE_MIN_PRICE:       float

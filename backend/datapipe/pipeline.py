@@ -78,7 +78,10 @@ async def startup_live(sink: BarSink | None = None) -> None:
         await backfill_all_symbols(pool, _rest, today, replay_mode=(mode == "replay"))
         logger.info("[pipeline] step 3/5: historian backfill complete")
 
-        logger.info("[pipeline] step 4/5: truncating livestream (fresh session)")
+        # Truncate unconditionally so priming writes into a clean table.
+        # Every startup MUST re-pull today's bars from REST so any gaps
+        # left by the previous WS session get filled in.
+        logger.info("[pipeline] step 4/5: truncating livestream (fresh session; will be re-primed)")
         await truncate_livestream(pool)
 
         if mode == "replay":
@@ -104,7 +107,7 @@ async def startup_live(sink: BarSink | None = None) -> None:
             logger.info("[pipeline] replay startup complete -- replay running in background")
         else:
             logger.info("[pipeline] step 5/5: spawning livestream task")
-            _live_task = asyncio.create_task(run_livestream(pool, sink=sink))
+            _live_task = asyncio.create_task(run_livestream(pool, _rest, sink=sink))
             logger.info("[pipeline] live startup complete -- livestream running in background")
     except Exception:
         logger.exception("[pipeline] startup FAILED -- releasing resources")

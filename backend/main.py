@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -30,8 +30,8 @@ from backend.common.logging_config import setup_app_logging
 from backend.core.config import settings
 from backend.database.pool import get_pool
 from backend.database.readers import (
+    load_latest_livestream_per_symbol,
     load_livestream_bars_for_symbol,
-    load_top_relatr,
 )
 from backend.datapipe import pipeline
 from backend.datapipe.replay import ReplayConfig
@@ -128,27 +128,17 @@ async def health():
 
 
 @app.get("/api/livestream/top")
-async def api_livestream_top(
-    n: int = Query(20, ge=1, le=200),
-    order: str = Query("desc", pattern="^(desc|abs)$"),
-    min_volume: int = Query(10_000, ge=0),
-    min_rvol: float = Query(2.0, ge=0.0),
-):
+async def api_livestream_top():
     """
-    Top N symbols by RelATR from ``livestream``. Filters:
-      * volume    >= min_volume  (default 10,000)
-      * rvol_cum  >= min_rvol    (default 2.0)
+    Latest livestream row per symbol -- ALL rows, unfiltered, unsorted.
+
+    Display concerns (volume floor, RVOL floor, RelATR floor, sort order,
+    row cap) live entirely in the frontend so they can be tweaked without
+    touching backend code.
     """
     pool = get_pool()
-    rows = await load_top_relatr(
-        pool, n=n, order=order,
-        min_volume=min_volume, min_rvol=min_rvol,
-    )
-    return {
-        "n": n, "order": order,
-        "min_volume": min_volume, "min_rvol": min_rvol,
-        "rows": rows,
-    }
+    rows = await load_latest_livestream_per_symbol(pool)
+    return {"rows": rows}
 
 
 @app.get("/api/livestream/bars/{symbol}")

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 import asyncpg
 import pandas as pd
@@ -56,8 +56,9 @@ DAILY_BACKFILL_DAYS = 20      # 20 calendar days guarantees >=14 trading days
 RVOL_SAMPLE_SESSIONS = 5      # RVOL baseline averages this many trading sessions
 
 # Freshness thresholds used to decide whether a symbol needs any backfill.
-DAILY_STALE_DAYS = 3            # covers weekend restarts (Fri -> Mon)
-INTRADAY_STALE_SECONDS = 5 * 60  # if last bar arrived <5min ago, we're current
+DAILY_STALE_DAYS = 3             # covers weekend restarts (Fri -> Mon)
+INTRADAY_STALE_DAYS = 3          # same idea for intraday -- a Fri close is
+                                 # still "current" on a Sun/Mon restart
 
 
 # ---------------------------------------------------------------------------
@@ -128,14 +129,12 @@ async def backfill_all_symbols(
     classify into two buckets (daily / intraday) and only symbols with an
     actual gap hit the network.
 
-    Freshness semantics differ by mode:
-
-      * live   -- intraday is fresh if last_ts is within
-                  INTRADAY_STALE_SECONDS of wall-clock UTC now.
-      * replay -- intraday is fresh if ``session_date_et(last_ts) >= today``
-                  (i.e. we already have data covering the target replay
-                  day). The wall-clock check is meaningless when ``today``
-                  is deliberately a past date.
+    Freshness semantics -- SAME rule for live and replay:
+    intraday is fresh if ``session_date_et(last_ts) >= today`` -- i.e. we
+    already have at least one bar from today's ET session. The livestream
+    (in live mode) or the replay driver (in replay mode) fills the small
+    gap forward from there. A wall-clock threshold makes no sense on a
+    delayed feed and triggered full-day refetches on every restart.
     """
     symbol_map = await load_active_symbol_map(pool)
     if not symbol_map:
@@ -156,11 +155,23 @@ async def backfill_all_symbols(
     # 2. Batched readiness snapshot -- two aggregate queries, no per-symbol I/O
     daily_map, intraday_map = await load_readiness_snapshot(pool)
 
-    now_utc = datetime.now(timezone.utc)
     daily_cutoff_date = today - timedelta(days=DAILY_STALE_DAYS)
 
     daily_todo: list[tuple[str, int]] = []
     intraday_todo: list[tuple[str, int, date]] = []  # (symbol, symbolid, need_from)
+
+    # Target last date for intraday_bars depends on mode:
+    #   live   -> yesterday. livestream primes today via REST, historian
+    #             stays out of today entirely (baseline material only).
+    #   replay -> today (= REPLAY_DAY). Replay driver reads that day out
+    #             of intraday_bars, so it must be there.
+    fetch_end = today if replay_mode else today - timedelta(days=1)
+
+    # Intraday freshness cutoff: accept any bar from within the last
+    # INTRADAY_STALE_DAYS calendar days. This tolerates weekends/holidays
+    # where "yesterday" was not a trading day and we correctly have data
+    # from the last trading session (e.g. Friday on a Monday restart).
+    intraday_stale_cutoff = today - timedelta(days=INTRADAY_STALE_DAYS)
 
     for symbol, symbolid in symbol_map.items():
         last_d = daily_map.get(symbolid)
@@ -173,16 +184,10 @@ async def backfill_all_symbols(
             continue
 
         have_date = session_date_et(last_ts)
-        if replay_mode:
-            # Ready iff we already cover the target day
-            if have_date < today:
-                need_from = have_date if have_date >= intraday_start else intraday_start
-                intraday_todo.append((symbol, symbolid, need_from))
-        else:
-            # Live: use the wall-clock freshness threshold
-            if (now_utc - last_ts).total_seconds() >= INTRADAY_STALE_SECONDS:
-                need_from = have_date if have_date >= intraday_start else intraday_start
-                intraday_todo.append((symbol, symbolid, need_from))
+        # Ready iff have_date is within the staleness window.
+        if have_date < intraday_stale_cutoff:
+            need_from = have_date if have_date >= intraday_start else intraday_start
+            intraday_todo.append((symbol, symbolid, need_from))
 
     logger.info(
         "[historian] readiness: %d symbols ready, %d need daily, %d need intraday",
@@ -194,7 +199,7 @@ async def backfill_all_symbols(
         logger.info("[historian] nothing to backfill -- all symbols current")
     else:
         await _run_backfill_workers(
-            pool, rest, today, daily_todo, intraday_todo, concurrency,
+            pool, rest, today, fetch_end, daily_todo, intraday_todo, concurrency,
         )
 
     # 3. RVOL baseline rebuild -- cheap even when nothing new was fetched,
@@ -216,6 +221,7 @@ async def _run_backfill_workers(
     pool: asyncpg.Pool,
     rest: RestClient,
     today: date,
+    fetch_end: date,
     daily_todo: list[tuple[str, int]],
     intraday_todo: list[tuple[str, int, date]],
     concurrency: int,
@@ -265,7 +271,7 @@ async def _run_backfill_workers(
         async with sem:
             try:
                 intraday_all = await _backfill_intraday_for_symbol(
-                    rest, symbol, symbolid, need_from, today,
+                    rest, symbol, symbolid, need_from, fetch_end,
                 )
                 intraday = [
                     b for b in intraday_all

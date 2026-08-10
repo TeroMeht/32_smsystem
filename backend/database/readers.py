@@ -250,37 +250,24 @@ async def last_daily_date(
 # ---------------------------------------------------------------------------
 
 
-async def load_top_relatr(
+async def load_latest_livestream_per_symbol(
     pool: asyncpg.Pool,
-    n: int = 20,
-    order: str = "desc",
-    min_volume: int = 10_000,
-    min_rvol: float = 2.0,
 ) -> list[dict]:
     """
-    ACTUAL latest livestream row per symbol, filtered by quality thresholds,
-    top N by RelATR.
+    Latest livestream row per symbol PLUS session-cumulative volume.
 
-    Order matters: pick the latest bar per symbol FIRST, then apply
-    filters. Doing the filter first would let a symbol that spiked hours
-    ago (and has since gone quiet) stay pinned to that old bar -- users
-    expect the table to reflect the current situation, not the last time
-    a symbol was interesting.
+    Since ``livestream`` is truncated at each session boundary, SUM(volume)
+    across the whole table per symbolid == today's cumulative volume from
+    session open. One CTE does the latest-per-symbol pick, another sums
+    per symbolid, LEFT JOIN combines them.
 
-      * volume   >= min_volume        (default 10,000)   -- illiquid noise
-      * rvol_cum >= min_rvol          (default 2.0)      -- extended session
-
-    order == "desc" -> highest positive relatr first.
-    order == "abs"  -> largest magnitude first.
+    Unfiltered, unsorted, unlimited -- the frontend owns all display
+    filters (volume floor, RVOL floor, RelATR floor, cum-volume floor,
+    sort, row cap).
     """
-    if order not in ("desc", "abs"):
-        raise ValueError(f"order must be 'desc' or 'abs', got {order!r}")
-    order_clause = "ORDER BY relatr DESC NULLS LAST" if order == "desc" else \
-                   "ORDER BY ABS(relatr) DESC NULLS LAST"
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            f"""
+            """
             WITH latest AS (
                 SELECT DISTINCT ON (l.symbolid)
                        ms.symbol,
@@ -295,16 +282,16 @@ async def load_top_relatr(
                   FROM livestream l
                   JOIN monitored_symbols ms USING (symbolid)
                  ORDER BY l.symbolid, l.ts DESC
+            ),
+            cum_vol AS (
+                SELECT symbolid, SUM(volume)::bigint AS cum_volume
+                  FROM livestream
+                 GROUP BY symbolid
             )
-            SELECT * FROM latest
-             WHERE relatr   IS NOT NULL
-               AND volume   >= $2
-               AND rvol_cum IS NOT NULL
-               AND rvol_cum >= $3
-             {order_clause}
-             LIMIT $1;
-            """,
-            n, min_volume, min_rvol,
+            SELECT latest.*, cum_vol.cum_volume
+              FROM latest
+              LEFT JOIN cum_vol USING (symbolid);
+            """
         )
     return [
         {
@@ -316,6 +303,7 @@ async def load_top_relatr(
             "rvol_cum": float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
             "relatr": float(r["relatr"]) if r["relatr"] is not None else None,
             "volume": int(r["volume"]) if r["volume"] is not None else None,
+            "cum_volume": int(r["cum_volume"]) if r["cum_volume"] is not None else None,
         }
         for r in rows
     ]
@@ -324,6 +312,64 @@ async def load_top_relatr(
 # ---------------------------------------------------------------------------
 # Batch readiness -- one query per table instead of one-per-symbol.
 # ---------------------------------------------------------------------------
+
+
+async def load_livestream_freshness(pool: asyncpg.Pool) -> dict[int, datetime]:
+    """
+    symbolid -> MAX(ts) currently in ``livestream``. One aggregate query.
+
+    Used by the livestream priming step to decide, per symbol, whether we
+    can skip the REST fetch (we already have today's data) or need to
+    fetch and enrich.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT symbolid, MAX(ts) AS ts FROM livestream GROUP BY symbolid;"
+        )
+    return {r["symbolid"]: r["ts"] for r in rows if r["ts"] is not None}
+
+
+async def load_livestream_bars_for_symbol_today(
+    pool: asyncpg.Pool,
+    symbolid: int,
+    today_et: date,
+) -> list[Bar1m]:
+    """
+    All livestream rows for ``symbolid`` whose ET session date is today,
+    ordered by ts. Used to rehydrate ``st.history`` from what livestream
+    already has, so we don't need to REST-fetch today's bars on restart.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT l.symbolid, l.ts, l.open, l.high, l.low, l.close, l.volume,
+                   l.vwap, l.ema9, l.rvol_cum, l.relatr,
+                   ms.symbol
+              FROM livestream l
+              JOIN monitored_symbols ms USING (symbolid)
+             WHERE l.symbolid = $1
+               AND (l.ts AT TIME ZONE 'America/New_York')::date = $2
+             ORDER BY l.ts ASC;
+            """,
+            symbolid, today_et,
+        )
+    return [
+        Bar1m(
+            symbol=r["symbol"],
+            symbolid=r["symbolid"],
+            ts=r["ts"],
+            open=float(r["open"]),
+            high=float(r["high"]),
+            low=float(r["low"]),
+            close=float(r["close"]),
+            volume=int(r["volume"]),
+            vwap=float(r["vwap"]) if r["vwap"] is not None else None,
+            ema9=float(r["ema9"]) if r["ema9"] is not None else None,
+            rvol_cum=float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
+            relatr=float(r["relatr"]) if r["relatr"] is not None else None,
+        )
+        for r in rows
+    ]
 
 
 async def load_readiness_snapshot(

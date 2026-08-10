@@ -16,13 +16,12 @@ Steps:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Awaitable, Callable, Optional
 
 import asyncpg
 
-from backend.database.writers import insert_intraday_bar, insert_livestream_bar
+from backend.database.writers import insert_livestream_bar
 from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.schemas import Bar1m
 from backend.datapipe.session_state import SessionStore, SymbolSessionState
@@ -63,11 +62,9 @@ async def process_bar(
     # ``logger.debug(...)`` here (and flip the module logger to DEBUG) if
     # you ever need to spot-check calculations again.
 
-    # Persist first; the sink shouldn't see a bar that isn't in the DB yet.
-    await asyncio.gather(
-        insert_livestream_bar(pool, enriched),
-        insert_intraday_bar(pool, enriched),
-    )
+    # Persist to livestream only. intraday_bars is the historian's job --
+    # baseline material for RVOL rebuilds and nothing else.
+    await insert_livestream_bar(pool, enriched)
 
     st.history.append(enriched)
     # Advance the running baseline sum so the NEXT bar sees this slot's
