@@ -43,7 +43,7 @@ from backend.database.writers import (
 from backend.datapipe.calculations import compute_atr_series
 from backend.datapipe.rest_client import RestClient
 from backend.datapipe.schemas import Bar1m, DailyBar, MonitoredSymbols
-from backend.datapipe.time_utils import session_date_et
+from backend.datapipe.time_utils import previous_trading_day, session_date_et
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +59,16 @@ async def _backfill_daily_for_symbol(
     symbolid: int,
     up_to: date,
 ) -> list[DailyBar]:
-    """Fetch daily bars + compute ATR14 + return DailyBar list ready to insert."""
-    raw = await rest.fetch_daily_bars(symbol, end_day=up_to, lookback_days=settings.DAILY_BACKFILL_DAYS)
+    """
+    Fetch daily bars + compute ATR14 + return DailyBar list ready to insert.
+
+    Always fetches the full DAILY_BACKFILL_DAYS window (with a 2x calendar
+    buffer for weekends/holidays) because ATR14 needs 14 trading days of
+    context -- a purely incremental "just fetch yesterday" would leave us
+    unable to compute the new row's ATR.
+    """
+    start = up_to - timedelta(days=settings.DAILY_BACKFILL_DAYS * 2)
+    raw = await rest.fetch_daily_bars_range(symbol, start_day=start, end_day=up_to)
     if not raw:
         return []
     df = pd.DataFrame([
@@ -141,8 +149,6 @@ async def backfill_all_symbols(
     # 2. Batched readiness snapshot -- two aggregate queries, no per-symbol I/O
     daily_map, intraday_map = await load_readiness_snapshot(pool)
 
-    daily_cutoff_date = today - timedelta(days=settings.DAILY_STALE_DAYS)
-
     daily_todo: list[tuple[str, int]] = []
     intraday_todo: list[tuple[str, int, date]] = []  # (symbol, symbolid, need_from)
 
@@ -153,26 +159,30 @@ async def backfill_all_symbols(
     #             of intraday_bars, so it must be there.
     fetch_end = today if replay_mode else today - timedelta(days=1)
 
-    # Intraday freshness cutoff: accept any bar from within the last
-    # INTRADAY_STALE_DAYS calendar days. This tolerates weekends/holidays
-    # where "yesterday" was not a trading day and we correctly have data
-    # from the last trading session (e.g. Friday on a Monday restart).
-    intraday_stale_cutoff = today - timedelta(days=settings.INTRADAY_STALE_DAYS)
+    # Freshness rule (calendar-aware, no knobs):
+    #   "The newest data on disk must cover through the last completed
+    #    trading day."  On Tue that's Mon; on Mon that's Fri.
+    # Anything older triggers a refetch. Holidays not modeled -- worst
+    # case is one wasted REST call per symbol.
+    required_through = previous_trading_day(today)
 
     for symbol, symbolid in symbol_map.items():
         last_d = daily_map.get(symbolid)
-        if last_d is None or last_d < daily_cutoff_date:
+        if last_d is None or last_d < required_through:
             daily_todo.append((symbol, symbolid))
 
         last_ts = intraday_map.get(symbolid)
         if last_ts is None:
+            # Brand-new symbol: fetch the full backfill window.
             intraday_todo.append((symbol, symbolid, intraday_start))
             continue
 
         have_date = session_date_et(last_ts)
-        # Ready iff have_date is within the staleness window.
-        if have_date < intraday_stale_cutoff:
-            need_from = have_date if have_date >= intraday_start else intraday_start
+        if have_date < required_through:
+            # Incremental catch-up: start from the day AFTER what's on
+            # disk, clamped upward to the retention floor so we never
+            # ask for older than the intraday backfill window allows.
+            need_from = max(have_date + timedelta(days=1), intraday_start)
             intraday_todo.append((symbol, symbolid, need_from))
 
     logger.info(
@@ -182,25 +192,23 @@ async def backfill_all_symbols(
     )
 
     if not daily_todo and not intraday_todo:
-        logger.info("Nothing to backfill -- all symbols has current data")
+        logger.info(
+            "All %d symbols current through -- no REST fetches needed",
+            total,
+        )
     else:
         await _run_backfill_workers(
             pool, rest, today, fetch_end, daily_todo, intraday_todo, concurrency,
         )
 
-    # 3. RVOL baseline rebuild -- cheap even when nothing new was fetched,
-    #    and guarantees the table reflects whatever is currently in intraday_bars.
-    logger.info(
-        "[historian] rebuilding rvol_baseline (lookback=%dd, sample_sessions=%d)",
-        settings.INTRADAY_BACKFILL_DAYS, settings.RVOL_SAMPLE_SESSIONS,
-    )
+
     await rvol_baseline_db.rebuild(
         pool, end_day=today,
         lookback_days=settings.INTRADAY_BACKFILL_DAYS,
         sample_sessions=settings.RVOL_SAMPLE_SESSIONS,
     )
 
-    logger.info("[historian] backfill complete")
+    logger.info("Backfill complete")
 
 
 async def _run_backfill_workers(
@@ -249,7 +257,7 @@ async def _run_backfill_workers(
                     counters["daily_rows"] += len(daily)
             except Exception:
                 counters["errors"] += 1
-                logger.exception("[historian] %s: daily backfill failed", symbol)
+                logger.exception("%s: daily backfill failed", symbol)
             finally:
                 _tick(1)
 

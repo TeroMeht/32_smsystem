@@ -52,14 +52,12 @@ class Settings(BaseSettings):
     #                          (20 days guarantees >=14 trading days for
     #                          ATR14).
     # RVOL_SAMPLE_SESSIONS   : trading sessions averaged into the baseline.
-    # DAILY_STALE_DAYS       : freshness threshold for daily -- older than
-    #                          this triggers a refetch (3 covers Fri->Mon).
-    # INTRADAY_STALE_DAYS    : same idea for intraday.
+    #
+    # Freshness has NO knob: the rule is "we must have data through the
+    # previous trading day". Weekend rollback is calendar-derived.
     INTRADAY_BACKFILL_DAYS: int
     DAILY_BACKFILL_DAYS:    int
     RVOL_SAMPLE_SESSIONS:   int
-    DAILY_STALE_DAYS:       int
-    INTRADAY_STALE_DAYS:    int
 
     # --- Runtime mode ---
     # MODE = "live"    : historian aligns to wall-clock today, WS livestream
@@ -88,7 +86,9 @@ class Settings(BaseSettings):
         # REPLAY_START_TIME must be empty or strict 24-hour "HH:MM".
         # Reject 12-hour formats like "4:30 PM" -- users have to think in
         # the same convention as everything else on this system.
+        # Normalize back so callers can just check truthiness.
         s = (self.REPLAY_START_TIME or "").strip()
+        self.REPLAY_START_TIME = s
         if s:
             ok = False
             parts = s.split(":")

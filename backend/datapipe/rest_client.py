@@ -6,8 +6,10 @@ Only the endpoints the datapipe needs are wrapped:
   * ``fetch_intraday_bars(symbol, day)``   -> 1-min bars for a single ET
                                               trading date, all sessions
                                               (pre/regular/after).
-  * ``fetch_daily_bars(symbol, days)``     -> N-day daily history (for ATR14
-                                              warmup in the historian).
+  * ``fetch_daily_bars_range(symbol, start_day, end_day)`` -> daily history
+                                              in an inclusive date window
+                                              (for ATR14 warmup / incremental
+                                              catch-up in the historian).
 
 next_url pagination is handled here so callers see a flat list.
 """
@@ -162,16 +164,15 @@ class RestClient:
         )
         return await self._paged_get(url, {"adjusted": "true", "sort": "asc", "limit": 50000})
 
-    async def fetch_daily_bars(
+    async def fetch_daily_bars_range(
         self,
         symbol: str,
+        start_day: date,
         end_day: date,
-        lookback_days: int = 20,
     ) -> list[RestAggregateBar]:
-        """Daily bars ending on ``end_day`` -- feeds ATR14 in the historian."""
-        start = end_day - timedelta(days=lookback_days * 2)  # buffer for weekends/holidays
+        """Daily bars in ``[start_day, end_day]`` -- feeds ATR14 in the historian."""
         url = (
             f"{self._base_url}/v2/aggs/ticker/{symbol}"
-            f"/range/1/day/{date_to_iso(start)}/{date_to_iso(end_day)}"
+            f"/range/1/day/{date_to_iso(start_day)}/{date_to_iso(end_day)}"
         )
         return await self._paged_get(url, {"adjusted": "true", "sort": "asc", "limit": 5000})

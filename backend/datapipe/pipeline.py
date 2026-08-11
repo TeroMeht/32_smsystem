@@ -73,10 +73,9 @@ async def startup(sink: BarSink | None = None) -> None:
         await empty_livestream_table(pool)
 
         if mode == "replay":
-            start_raw = (settings.REPLAY_START_TIME or "").strip()
             start_utc = (
-                helsinki_hhmm_to_utc(settings.REPLAY_DAY, start_raw)
-                if start_raw else None
+                helsinki_hhmm_to_utc(settings.REPLAY_DAY, settings.REPLAY_START_TIME)
+                if settings.REPLAY_START_TIME else None
             )
             cfg = ReplayConfig(
                 day=settings.REPLAY_DAY,

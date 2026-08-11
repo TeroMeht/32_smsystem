@@ -48,6 +48,7 @@ from backend.datapipe.bar_processor import BarSink, process_bar
 from backend.datapipe.rest_client import RestClient  # kept for pipeline signature compat
 from backend.datapipe.schemas import MonitoredSymbols
 from backend.datapipe.session_state import SessionStore
+from backend.datapipe.time_utils import to_helsinki
 
 logger = logging.getLogger(__name__)
 
@@ -112,18 +113,37 @@ async def _consume(
     bars, sleep ``(next.ts - current.ts) / speed`` seconds so multi-symbol
     replays stay cross-symbol time-aligned; ``speed = 0`` skips the sleep.
     Per-bar errors are logged and the loop continues.
+
+    Log signals:
+      * one info line per consumed bar -- OHLC + VWAP, same shape as the
+        live consumer's first-bar line.
     """
+    total = len(timeline)
+    logger.info("Draining %d bars (speed= %.2f)", total, speed)
+
     prev_ts = None
+    processed = 0
+
     for bar in timeline:
         if prev_ts is not None and speed > 0:
             gap = (bar.ts - prev_ts).total_seconds() / speed
             if gap > 0:
                 await asyncio.sleep(gap)
         prev_ts = bar.ts
+
         try:
             await process_bar(pool, store, bar, sink=sink)
+            processed += 1
+            logger.info(
+                "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d",
+                bar.symbol,
+                to_helsinki(bar.ts).strftime("%H:%M"),
+                bar.open, bar.high, bar.low, bar.close, bar.volume,
+            )
         except Exception:
             logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)
+
+    logger.info("Drain finished -- processed %d/%d bars", processed, total)
 
 
 async def run_replay(
@@ -143,11 +163,7 @@ async def run_replay(
     """
     store = SessionStore()
 
-    logger.info(
-        "task started day=%s speed=%.2f lookback=%dd sample_sessions=%d",
-        cfg.day, cfg.speed,
-        settings.INTRADAY_BACKFILL_DAYS, settings.RVOL_SAMPLE_SESSIONS,
-    )
+    logger.info("Replay started day= %s speed= %.2f",cfg.day, cfg.speed)
 
     try:
 

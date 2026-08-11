@@ -40,7 +40,7 @@ async def ensure_partition_intraday(pool: asyncpg.Pool, d: date) -> None:
     )
     async with pool.acquire() as conn:
         await conn.execute(sql)
-    logger.debug("[db.partitions] ensured %s", name)
+    logger.debug("ensured %s", name)
 
 
 async def ensure_partition_daily(pool: asyncpg.Pool, d: date) -> None:
@@ -52,7 +52,7 @@ async def ensure_partition_daily(pool: asyncpg.Pool, d: date) -> None:
     )
     async with pool.acquire() as conn:
         await conn.execute(sql)
-    logger.debug("[db.partitions] ensured %s", name)
+    logger.debug("ensured %s", name)
 
 
 async def ensure_partitions_for_dates(
@@ -67,7 +67,7 @@ async def ensure_partitions_for_dates(
         await ensure_partition_intraday(pool, d)
     for d in daily:
         await ensure_partition_daily(pool, d)
-    logger.info("[db.partitions] ensured %d intraday_bars + %d daily partitions",
+    logger.info("ensured %d intraday_bars + %d daily partitions",
                 len(intra), len(daily))
 
 

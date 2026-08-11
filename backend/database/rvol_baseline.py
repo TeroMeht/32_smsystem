@@ -90,8 +90,8 @@ _REBUILD_SQL = """
 async def rebuild(
     pool: asyncpg.Pool,
     end_day: date,
-    lookback_days: int = 8,
-    sample_sessions: int = 5,
+    lookback_days: int,
+    sample_sessions: int,
 ) -> None:
     """
     Recompute avg cumulative volume per (symbolid, ET bar_time) using the
@@ -103,11 +103,8 @@ async def rebuild(
     include the replay/target day itself). For live use, pass ``today``.
     """
     start_day = end_day - timedelta(days=lookback_days)
-    logger.info(
-        "Rebuilding: calendar window [%s, %s) "
-        "-> take %d most recent trading sessions per symbol",
-        start_day, end_day, sample_sessions,
-    )
+    logger.info("Rebuilding: Rvol model [%s, %s) ", start_day, end_day)
+
     async with pool.acquire() as conn:
         await conn.execute(
             _REBUILD_SQL,

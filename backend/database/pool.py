@@ -33,16 +33,15 @@ async def init_pool(min_size: int = 2, max_size: int = 20) -> asyncpg.Pool:
     """Create the pool once. Idempotent -- returns the existing pool if set."""
     global _pool
     if _pool is not None:
-        logger.info("[db.pool] init_pool called but pool already exists -- reusing")
+        logger.debug("[db.pool] init_pool called but pool already exists -- reusing")
         return _pool
-    logger.info("[db.pool] connecting to %s (min=%d max=%d)",
-                _redact_dsn(settings.DATABASE_URL), min_size, max_size)
+
     _pool = await asyncpg.create_pool(
         dsn=settings.DATABASE_URL,
         min_size=min_size,
         max_size=max_size,
     )
-    logger.info("[db.pool] pool created")
+    logger.debug("[db.pool] pool created")
     return _pool
 
 
@@ -55,7 +54,7 @@ def get_pool() -> asyncpg.Pool:
 async def close_pool() -> None:
     global _pool
     if _pool is not None:
-        logger.info("[db.pool] closing pool")
+        logger.debug("[db.pool] closing pool")
         await _pool.close()
         _pool = None
-        logger.info("[db.pool] pool closed")
+        logger.debug("[db.pool] pool closed")

@@ -13,7 +13,7 @@ persist UTC and let the DB store the offset.
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from backend.core.config import settings
@@ -93,3 +93,20 @@ def unix_ms_to_utc(ms: int) -> datetime:
 def date_to_iso(d: date) -> str:
     """YYYY-MM-DD for REST 'from'/'to' params."""
     return d.isoformat()
+
+
+def previous_trading_day(d: date) -> date:
+    """
+    The most recent US-market trading day strictly before ``d``.
+
+    Weekend-aware only: Mon -> Fri, Tue -> Mon, ..., Sun -> Fri.
+
+    Used by the historian as the freshness bar -- "we should already have
+    data through this date; if we don't, refetch". Deliberately does NOT
+    know about market holidays (Thanksgiving, Christmas, etc.). Worst case
+    on a post-holiday morning is one wasted REST call that returns empty.
+    """
+    prev = d - timedelta(days=1)
+    while prev.weekday() >= 5:  # 5 = Sat, 6 = Sun
+        prev -= timedelta(days=1)
+    return prev
