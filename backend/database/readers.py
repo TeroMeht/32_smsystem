@@ -418,3 +418,24 @@ async def load_livestream_bars_for_symbol_today(
         for r in rows
     ]
 
+
+async def get_last_backfill_run(
+    pool: asyncpg.Pool,
+) -> tuple[Optional[datetime], Optional[datetime]]:
+    """
+    Return (last_daily_run_utc, last_intraday_run_utc) from ``backfill_status``.
+
+    Either component is ``None`` if that side has never successfully
+    completed. Historian uses these to decide -- per side -- whether we
+    already did the work today and can skip the REST calls entirely.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT MAX(daily_last_run)    AS daily,
+                   MAX(intraday_last_run) AS intraday
+              FROM backfill_status;
+            """
+        )
+    return row["daily"], row["intraday"]
+

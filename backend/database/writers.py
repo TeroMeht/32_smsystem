@@ -18,7 +18,8 @@ direct SQL. Three tables get written from the live/replay hot path:
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Sequence
+from datetime import datetime
+from typing import Iterable, Optional, Sequence
 
 import asyncpg
 
@@ -290,3 +291,32 @@ async def bulk_insert_daily_bars(
                     atr = EXCLUDED.atr;
                 """
             )
+
+
+# ---------------------------------------------------------------------------
+# backfill_status  (persistent freshness ledger; one INSERT per historian run)
+# ---------------------------------------------------------------------------
+
+
+async def record_backfill_run(
+    pool: asyncpg.Pool,
+    *,
+    daily_last_run:       Optional[datetime],
+    intraday_last_run:    Optional[datetime]
+) -> None:
+    """
+    Append one row to ``backfill_status`` describing this run.
+
+    Pass ``None`` for whichever side was skipped in this run; row counts
+    default to 0. Historian reads back ``MAX(daily_last_run)`` /
+    ``MAX(intraday_last_run)`` to decide freshness on the next startup.
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO backfill_status
+                (daily_last_run, intraday_last_run)
+            VALUES ($1, $2);
+            """,
+            daily_last_run, intraday_last_run
+        )

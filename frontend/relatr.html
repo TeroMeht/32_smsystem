@@ -27,9 +27,18 @@
   h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: 0.5px; }
   .meta { font-size: 12px; color: #8a92a5; }
   .controls { margin-left: auto; display: flex; gap: 10px; align-items: center;
-              font-size: 12px; color: #8a92a5; }
+              font-size: 12px; color: #8a92a5; flex-wrap: wrap; }
   select, input { background: #1a1e26; color: #e6e8ec; border: 1px solid #2a2f3a;
                   border-radius: 4px; padding: 3px 6px; font-size: 12px; }
+  .filters { display: flex; gap: 10px; align-items: center; font-size: 12px;
+             color: #8a92a5; padding: 8px 12px; margin-bottom: 12px;
+             background: #12161d; border: 1px solid #1e232d; border-radius: 6px;
+             flex-wrap: wrap; }
+  .filters label { display: inline-flex; align-items: center; gap: 4px; }
+  .filters input { width: 80px; }
+  .filters button { background: #1a1e26; color: #e6e8ec; border: 1px solid #2a2f3a;
+                    border-radius: 4px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .filters button:hover { background: #232833; }
 
   .chart-wrap { margin-bottom: 22px; border: 1px solid #1e232d; border-radius: 6px;
                 background: #12161d; }
@@ -76,6 +85,16 @@
     </div>
   </header>
 
+  <!-- Live-editable filter thresholds. Values persist to localStorage so
+       reloading the page keeps whatever the user last set. -->
+  <div class="filters">
+    <label>Min RelATR    <input id="fMinRelatr"    type="number" step="0.01"></label>
+    <label>Min RVOL      <input id="fMinRvol"      type="number" step="0.1"></label>
+    <label>Min Volume    <input id="fMinVolume"    type="number" step="1"></label>
+    <label>Min CumVol    <input id="fMinCumVolume" type="number" step="1000"></label>
+    <button id="fReset" title="Restore defaults">Reset</button>
+  </div>
+
   <!-- Chart -- populated on row click by chart.js -->
   <div class="chart-wrap">
     <div class="chart-header">
@@ -108,14 +127,48 @@
 <script type="module">
   import { initChart } from '/ui/chart.js';
 
-  // ---------- client-side filters (edit to tweak the view) ---------------
-  // Backend now returns the LATEST bar per symbol, unfiltered. All
-  // display thresholds live here so they can be changed by editing this
-  // one file, no server restart or SQL change needed.
-  const MIN_RELATR     = 0.45;
-  const MIN_RVOL       = 2.0;
-  const MIN_VOLUME     = 1000;    // this-bar volume
-  const MIN_CUM_VOLUME = 100000;      // today's session cumulative volume
+  // ---------- client-side filters (live-editable in the UI) --------------
+  // Backend returns the LATEST bar per symbol, unfiltered. All thresholds
+  // are set from the input fields above; their values persist in
+  // localStorage so a reload keeps whatever the user last set.
+  const FILTER_DEFAULTS = {
+    minRelatr:    0.45,
+    minRvol:      2.0,
+    minVolume:    100,
+    minCumVolume: 100000,
+  };
+  const FILTER_STORAGE_KEY = 'relatr.filters';
+
+  const fEls = {
+    minRelatr:    document.getElementById('fMinRelatr'),
+    minRvol:      document.getElementById('fMinRvol'),
+    minVolume:    document.getElementById('fMinVolume'),
+    minCumVolume: document.getElementById('fMinCumVolume'),
+  };
+
+  function loadFilters() {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(FILTER_STORAGE_KEY)) || {}; }
+    catch { saved = {}; }
+    const merged = { ...FILTER_DEFAULTS, ...saved };
+    for (const [k, v] of Object.entries(merged)) fEls[k].value = v;
+    return merged;
+  }
+  function readFilters() {
+    const out = {};
+    for (const [k, defVal] of Object.entries(FILTER_DEFAULTS)) {
+      const raw = fEls[k].value;
+      const n = raw === '' ? defVal : Number(raw);
+      out[k] = Number.isFinite(n) ? n : defVal;
+    }
+    return out;
+  }
+  function saveFilters(f) {
+    try { localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(f)); }
+    catch {}
+  }
+
+  let FILTERS = loadFilters();
 
   // ---------- chart -------------------------------------------------------
   const chartApi = initChart({
@@ -159,11 +212,12 @@
 
       // All display filters live here. Backend returns the latest bar
       // per symbol, unfiltered; we apply thresholds, sort, and limit.
+      const f = FILTERS;
       let rows = data.rows.filter(r =>
-        r.relatr     !== null && r.relatr     >= MIN_RELATR &&
-        r.rvol_cum   !== null && r.rvol_cum   >= MIN_RVOL &&
-        r.volume     !== null && r.volume     >= MIN_VOLUME &&
-        r.cum_volume !== null && r.cum_volume >= MIN_CUM_VOLUME
+        r.relatr     !== null && r.relatr     >= f.minRelatr    &&
+        r.rvol_cum   !== null && r.rvol_cum   >= f.minRvol      &&
+        r.volume     !== null && r.volume     >= f.minVolume    &&
+        r.cum_volume !== null && r.cum_volume >= f.minCumVolume
       );
       if (order === 'abs') {
         rows.sort((a, b) => Math.abs(b.relatr) - Math.abs(a.relatr));
@@ -173,8 +227,8 @@
       rows = rows.slice(0, n);
 
       metaEl.textContent =
-        `${rows.length} rows (relatr>=${MIN_RELATR}, rvol>=${MIN_RVOL}, ` +
-        `vol>=${MIN_VOLUME}, cumvol>=${MIN_CUM_VOLUME}, ` +
+        `${rows.length} rows (relatr>=${f.minRelatr}, rvol>=${f.minRvol}, ` +
+        `vol>=${f.minVolume}, cumvol>=${f.minCumVolume}, ` +
         `${data.rows.length} received)  |  last update ${now.toLocaleTimeString()}`;
 
       const seen = new Set();
@@ -229,6 +283,21 @@
   orderEl.addEventListener('change', tick);
   nEl.addEventListener('change', tick);
   intervalEl.addEventListener('change', reschedule);
+
+  // Filter inputs: re-read + persist + refresh on every edit.
+  function onFilterChange() {
+    FILTERS = readFilters();
+    saveFilters(FILTERS);
+    tick();
+  }
+  for (const el of Object.values(fEls)) {
+    el.addEventListener('input', onFilterChange);
+    el.addEventListener('change', onFilterChange);
+  }
+  document.getElementById('fReset').addEventListener('click', () => {
+    for (const [k, v] of Object.entries(FILTER_DEFAULTS)) fEls[k].value = v;
+    onFilterChange();
+  });
 
   // Row click -> chart. Delegated so it survives table re-renders.
   bodyEl.addEventListener('click', (e) => {

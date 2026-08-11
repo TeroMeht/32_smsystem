@@ -37,8 +37,6 @@ from typing import Optional
 
 import asyncpg
 
-from backend.core.config import settings
-from backend.database import rvol_baseline as rvol_baseline_db
 from backend.database.readers import (
     load_intraday_bars_for_day,
     load_latest_atr_map,
@@ -201,24 +199,20 @@ async def run_replay(
     sink: Optional[BarSink] = None,
 ) -> None:
     """
-    Rebuild baseline, initialize state, load today's timeline, then dispatch
-    to ``_consume`` for the step-through. NO reconnect: any failure
-    propagates to the caller.
+    Initialize state, load the day's timeline, then dispatch to ``_consume``
+    for the step-through. NO reconnect: any failure propagates to the caller.
 
     Caller (pipeline.startup) supplies ``symbol_map`` -- already validated
     non-empty there, so we don't re-check.
+
+    RVOL baseline is NOT rebuilt here -- the historian owns that as part of
+    the daily backfill, so replay just uses whatever's on disk.
     """
     store = SessionStore()
 
-    logger.info("Replay started day= %s speed= %.2f",cfg.day, cfg.speed)
+    logger.info("Replay started day= %s speed= %.2f", cfg.day, cfg.speed)
 
     try:
-
-        await rvol_baseline_db.rebuild(
-            pool, end_day=cfg.day,
-            lookback_days=settings.INTRADAY_BACKFILL_DAYS,
-            sample_sessions=settings.RVOL_SAMPLE_SESSIONS,
-        )
         await _initialize_state_from_db(pool, store, cfg, symbol_map)
 
         timeline = await load_intraday_bars_for_day(pool, cfg.day, symbol_map.values())

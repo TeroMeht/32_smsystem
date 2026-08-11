@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import asyncpg
 import pandas as pd
@@ -35,10 +35,10 @@ from backend.database.partitions import (
     ensure_partition_intraday,
     ensure_partitions_for_dates,
 )
-
 from backend.database.writers import (
     bulk_insert_daily_bars,
     bulk_insert_intraday_bars,
+    record_backfill_run,
 )
 from backend.datapipe.calculations import compute_atr_series
 from backend.datapipe.rest_client import RestClient
@@ -114,31 +114,36 @@ async def backfill_all_symbols(
     rest: RestClient,
     today: date,
     symbol_map: MonitoredSymbols,
+    *,
+    need_daily: bool,
+    need_intraday: bool,
     concurrency: int = 10,
     replay_mode: bool = False,
 ) -> None:
     """
     End-to-end warmup for every active symbol.
 
-    Readiness gate up front: one batched query per table gives us
-    ``symbolid -> last date/ts`` for both daily and intraday. Per symbol we
-    classify into two buckets (daily / intraday) and only symbols with an
-    actual gap hit the network.
+    The freshness decision lives in the caller (pipeline.startup): the
+    ``need_daily`` / ``need_intraday`` flags tell historian exactly which
+    sides to fetch. Passing both False is a no-op (caller should just
+    skip the call).
 
-    Freshness semantics -- SAME rule for live and replay:
-    intraday is fresh if ``session_date_et(last_ts) >= today`` -- i.e. we
-    already have at least one bar from today's ET session. The livestream
-    (in live mode) or the replay driver (in replay mode) fills the small
-    gap forward from there. A wall-clock threshold makes no sense on a
-    delayed feed and triggered full-day refetches on every restart.
+    After the workers finish, this function:
+      * rebuilds ``rvol_baseline`` iff new intraday rows landed on disk;
+      * inserts one row into ``backfill_status`` recording what ran and
+        how many rows each side added, so the next startup can gate
+        itself.
 
     Partition retention (``drop_old_partitions``) and universe loading are
     both handled by ``pipeline.startup`` before this runs -- we just make
     sure the forward-looking partitions exist.
     """
     total = len(symbol_map)
-    logger.info("Backfill data check for %d symbols (today= %s, replay_mode= %s)",
-                total, today.isoformat(), replay_mode)
+    logger.info(
+        "Backfill starting for %d symbols "
+        "(today= %s, replay_mode= %s, need_daily= %s, need_intraday= %s)",
+        total, today.isoformat(), replay_mode, need_daily, need_intraday,
+    )
 
     # 1. Ensure partitions exist for the retention window forward.
     intraday_start = today - timedelta(days=settings.INTRADAY_BACKFILL_DAYS)
@@ -146,41 +151,45 @@ async def backfill_all_symbols(
     daily_days = [today - timedelta(days=i) for i in range(DAILY_RETENTION_DAYS)]
     await ensure_partitions_for_dates(pool, intraday_days, daily_days)
 
-    daily_todo: list[tuple[str, int]] = []
-    intraday_todo: list[tuple[str, int, date]] = []
-
-    # Same fetch target logic as before
+    # 2. Build todo lists per the caller's need_* flags.
     fetch_end = today if replay_mode else today - timedelta(days=1)
+    daily_todo:    list[tuple[str, int]]       = []
+    intraday_todo: list[tuple[str, int, date]] = []
+    if need_daily:
+        for symbol, symbolid in symbol_map.items():
+            daily_todo.append((symbol, symbolid))
+    if need_intraday:
+        for symbol, symbolid in symbol_map.items():
+            intraday_todo.append((symbol, symbolid, intraday_start))
 
-    # Add every symbol to both queues
-    for symbol, symbolid in symbol_map.items():
-        daily_todo.append((symbol, symbolid))
-        intraday_todo.append((symbol, symbolid, intraday_start))
-
-    logger.info(
-        "Backfill readiness: %d symbols ready, %d need daily, %d need intraday",
-        total - max(len(daily_todo), len(intraday_todo)),
-        len(daily_todo), len(intraday_todo),
+    daily_rows, intraday_rows = await _run_backfill_workers(
+        pool, rest, today, fetch_end, daily_todo, intraday_todo, concurrency,
     )
 
-    if not daily_todo and not intraday_todo:
-        logger.info(
-            "All %d symbols current through -- no REST fetches needed",
-            total,
+    # 3. RVOL baseline rebuild -- only if intraday brought new data in.
+    if need_intraday and intraday_rows > 0:
+        logger.info("New intraday data (%d rows) -- rebuilding rvol_baseline", intraday_rows)
+        await rvol_baseline_db.rebuild(
+            pool, end_day=today,
+            lookback_days=settings.INTRADAY_BACKFILL_DAYS,
+            sample_sessions=settings.RVOL_SAMPLE_SESSIONS,
         )
     else:
-        await _run_backfill_workers(
-            pool, rest, today, fetch_end, daily_todo, intraday_todo, concurrency,
+        logger.info(
+            "Skipping rvol_baseline rebuild (need_intraday=%s intraday_rows=%d)",
+            need_intraday, intraday_rows,
         )
 
-
-    await rvol_baseline_db.rebuild(
-        pool, end_day=today,
-        lookback_days=settings.INTRADAY_BACKFILL_DAYS,
-        sample_sessions=settings.RVOL_SAMPLE_SESSIONS,
+    # 4. Ledger the successful run so the next startup can gate itself.
+    now_utc = datetime.now(timezone.utc)
+    await record_backfill_run(
+        pool,
+        daily_last_run    = now_utc if need_daily    else None,
+        intraday_last_run = now_utc if need_intraday else None
     )
 
-    logger.info("Backfill complete")
+    logger.info("Backfill complete (daily_rows= %d, intraday_rows= %d)",
+                daily_rows, intraday_rows)
 
 
 async def _run_backfill_workers(
@@ -191,31 +200,53 @@ async def _run_backfill_workers(
     daily_todo: list[tuple[str, int]],
     intraday_todo: list[tuple[str, int, date]],
     concurrency: int,
-) -> None:
+) -> tuple[int, int]:
     """
     Run the two work lists through a bounded semaphore. Each list is
     independent; we schedule both as one flat coroutine set so the
     concurrency limit applies to the total in-flight REST calls.
+
+    Returns ``(daily_rows_added, intraday_rows_added)`` so the caller can
+    ledger the run and decide whether an rvol_baseline rebuild is needed.
     """
+    if not daily_todo and not intraday_todo:
+        return 0, 0
+
     daily_cutoff = today - timedelta(days=DAILY_RETENTION_DAYS - 1)
     intraday_cutoff = today - timedelta(days=INTRADAY_RETENTION_DAYS - 1)
 
     sem = asyncio.Semaphore(concurrency)
-    counters = {"daily_rows": 0, "intraday_rows": 0, "errors": 0}
-    total_units = len(daily_todo) + len(intraday_todo)
-    done = 0
-    progress_step = max(1, total_units // 10)
+    counters = {"daily_rows": 0, "intraday_rows": 0,
+                "daily_errors": 0, "intraday_errors": 0}
 
-    def _tick(unit_done: int) -> int:
-        nonlocal done
-        done += unit_done
-        if done % progress_step < unit_done or done == total_units:
+    # Independent progress counters per side, each with its own ~10% step
+    # so the two streams log separately even though they run interleaved.
+    daily_total    = len(daily_todo)
+    intraday_total = len(intraday_todo)
+    daily_done    = 0
+    intraday_done = 0
+    daily_step    = max(1, daily_total    // 10) if daily_total    else 1
+    intraday_step = max(1, intraday_total // 10) if intraday_total else 1
+
+    def _tick_daily() -> None:
+        nonlocal daily_done
+        daily_done += 1
+        if daily_done % daily_step == 0 or daily_done == daily_total:
             logger.info(
-                "Backfill progress: %d/%d units (daily_rows= %d intraday_rows= %d errors= %d)",
-                done, total_units,
-                counters["daily_rows"], counters["intraday_rows"], counters["errors"],
+                "Daily backfill progress: %d/%d symbols (rows= %d errors= %d)",
+                daily_done, daily_total,
+                counters["daily_rows"], counters["daily_errors"],
             )
-        return done
+
+    def _tick_intraday() -> None:
+        nonlocal intraday_done
+        intraday_done += 1
+        if intraday_done % intraday_step == 0 or intraday_done == intraday_total:
+            logger.info(
+                "Intraday backfill progress: %d/%d symbols (rows= %d errors= %d)",
+                intraday_done, intraday_total,
+                counters["intraday_rows"], counters["intraday_errors"],
+            )
 
     async def _do_daily(symbol: str, symbolid: int) -> None:
         async with sem:
@@ -228,10 +259,10 @@ async def _run_backfill_workers(
                     await bulk_insert_daily_bars(pool, daily)
                     counters["daily_rows"] += len(daily)
             except Exception:
-                counters["errors"] += 1
+                counters["daily_errors"] += 1
                 logger.exception("%s: daily backfill failed", symbol)
             finally:
-                _tick(1)
+                _tick_daily()
 
     async def _do_intraday(symbol: str, symbolid: int, need_from: date) -> None:
         async with sem:
@@ -249,10 +280,10 @@ async def _run_backfill_workers(
                     await bulk_insert_intraday_bars(pool, intraday)
                     counters["intraday_rows"] += len(intraday)
             except Exception:
-                counters["errors"] += 1
+                counters["intraday_errors"] += 1
                 logger.exception("%s: intraday backfill failed", symbol)
             finally:
-                _tick(1)
+                _tick_intraday()
 
     tasks = (
         [_do_daily(s, sid) for s, sid in daily_todo]
@@ -261,6 +292,8 @@ async def _run_backfill_workers(
     await asyncio.gather(*tasks)
 
     logger.info(
-        "Backfilling complete: %d daily rows, %d intraday rows, %d errors",
-        counters["daily_rows"], counters["intraday_rows"], counters["errors"],
+        "Backfilling complete -- daily: %d rows / %d errors, intraday: %d rows / %d errors",
+        counters["daily_rows"],    counters["daily_errors"],
+        counters["intraday_rows"], counters["intraday_errors"],
     )
+    return counters["daily_rows"], counters["intraday_rows"]

@@ -93,7 +93,33 @@ CREATE TABLE rvol_baseline (
 );
 
 
--- 6. Helpful lookup indexes for the live path
+-- 6. backfill_status  (persistent freshness ledger)
+--
+-- One row per SUCCESSFUL historian run. Each row records WHEN the daily
+-- and/or intraday portions completed, plus how many rows they added.
+--
+--   * daily_last_run    -- timestamp of this run's daily portion; NULL
+--                          if the daily side was skipped in this run.
+--   * intraday_last_run -- same for intraday.
+--   * *_rows_added      -- 0 if nothing new landed on disk.
+--
+-- The historian consults ``MAX(daily_last_run)`` / ``MAX(intraday_last_run)``
+-- on startup: if the most recent successful run already happened today,
+-- REST fetches are skipped entirely. The rvol_baseline rebuild is
+-- similarly conditional -- only runs when intraday_rows_added > 0.
+CREATE TABLE backfill_status (
+    id                  serial      PRIMARY KEY,
+    daily_last_run      timestamptz,
+    intraday_last_run   timestamptz
+);
+
+CREATE INDEX idx_backfill_status_daily_last_run
+    ON backfill_status (daily_last_run DESC NULLS LAST);
+CREATE INDEX idx_backfill_status_intraday_last_run
+    ON backfill_status (intraday_last_run DESC NULLS LAST);
+
+
+-- 7. Helpful lookup indexes for the live path
 -- livestream latest-per-symbol reads happen constantly; keep ts DESC lookups cheap.
 CREATE INDEX IF NOT EXISTS idx_livestream_symbolid_ts_desc
     ON livestream (symbolid, ts DESC);

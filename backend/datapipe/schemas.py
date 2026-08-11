@@ -52,7 +52,6 @@ class Bar1m(BaseModel):
     low: float
     close: float
     volume: int
-    vwap_bar: Optional[float] = None  # per-bar vwap from source (Polygon `vw`)
     # Indicator slots populated by calculations.py
     vwap: Optional[float] = None          # session-cumulative VWAP
     ema9: Optional[float] = None
@@ -102,7 +101,6 @@ class AggregateMinuteMessage(BaseModel):
             low=self.l,
             close=self.c,
             volume=self.v,
-            vwap_bar=self.vw,
         )
 
 
@@ -135,7 +133,6 @@ class RestAggregateBar(BaseModel):
             low=self.l,
             close=self.c,
             volume=int(self.v),
-            vwap_bar=self.vw,
         )
 
 

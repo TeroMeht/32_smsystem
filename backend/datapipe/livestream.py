@@ -143,7 +143,7 @@ async def _consume(
 
     Full-fidelity raw-frame audit lives in logs/am_stream.log via am_logger.
     """
-    seen_symbols: set[str] = set()
+
 
     async for raw in ws:
         try:
@@ -180,11 +180,11 @@ async def _consume(
             try:
                 await process_bar(pool, store, bar, sink=sink)
                 logger.info(
-                    "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d VWAP_bar=%s",
+                    "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d VWAP=%s",
                     bar.symbol,
                     to_helsinki(bar.ts).strftime("%H:%M"),
                     bar.open, bar.high, bar.low, bar.close, bar.volume,
-                    f"{bar.vwap_bar:.4f}" if bar.vwap_bar is not None else "-",
+                    f"{bar.vwap:.4f}" if bar.vwap is not None else "-",
                 )
             except Exception:
                 logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)

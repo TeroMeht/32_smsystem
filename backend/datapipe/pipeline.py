@@ -25,7 +25,7 @@ import logging
 from backend.core.config import settings
 from backend.database.partitions import drop_old_partitions
 from backend.database.pool import close_pool, init_pool
-from backend.database.readers import load_active_symbol_map
+from backend.database.readers import get_last_backfill_run, load_active_symbol_map
 from backend.database.writers import empty_livestream_table
 from backend.datapipe.bar_processor import BarSink
 from backend.datapipe.historian import backfill_all_symbols
@@ -64,13 +64,29 @@ async def startup(sink: BarSink | None = None) -> None:
     _rest = RestClient()
     try:
         await drop_old_partitions(pool, today)
-        await backfill_all_symbols(
-            pool, _rest, today, symbol_map, replay_mode=(mode == "replay"),
-        )
-        logger.info("Historian backfill complete")
-
-        logger.info("Initializing livestream table")
         await empty_livestream_table(pool)
+
+        # Persistent freshness gate: one backfill per side per day.
+        # backfill_status is the source of truth -- if the last successful
+        # run for a side happened today, skip that side's REST + rvol work.
+        last_daily, last_intraday = await get_last_backfill_run(pool)
+        need_daily    = last_daily    is None or last_daily.date()    < today
+        need_intraday = last_intraday is None or last_intraday.date() < today
+
+        if need_daily or need_intraday:
+            await backfill_all_symbols(
+                pool, _rest, today, symbol_map,
+                need_daily=need_daily,
+                need_intraday=need_intraday,
+                replay_mode=(mode == "replay"),
+            )
+            logger.info("Historian backfill complete")
+        else:
+            logger.info(
+                "Backfill already ran today "
+                "(daily @ %s, intraday @ %s)",
+                last_daily, last_intraday,
+            )
 
         if mode == "replay":
             start_utc = (
