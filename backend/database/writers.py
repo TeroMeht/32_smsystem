@@ -129,12 +129,15 @@ async def bulk_insert_livestream_bars(
             )
 
 
-async def truncate_livestream(pool: asyncpg.Pool) -> None:
-    """Called at session boundary / process start so livestream = today only."""
+async def empty_livestream_table(pool: asyncpg.Pool) -> None:
+    """
+    Wipe the livestream table so priming re-populates it from a clean slate.
+    Called at session boundary and on every process start.
+    """
     async with pool.acquire() as conn:
         before = await conn.fetchval("SELECT COUNT(*) FROM livestream;")
         await conn.execute("TRUNCATE TABLE livestream;")
-    logger.info("[db.writers] truncated livestream (was %d rows)", before)
+    logger.debug("emptied livestream (was %d rows)", before)
 
 
 # ---------------------------------------------------------------------------

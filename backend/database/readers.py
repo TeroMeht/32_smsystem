@@ -21,16 +21,17 @@ from typing import Iterable, Optional
 
 import asyncpg
 
-from backend.datapipe.schemas import Bar1m
+from backend.datapipe.schemas import Bar1m, MonitoredSymbols
+from backend.datapipe.time_utils import HELSINKI
 
 
-async def load_active_symbol_map(pool: asyncpg.Pool) -> dict[str, int]:
-    """symbol -> symbolid for all active monitored symbols."""
+async def load_active_symbol_map(pool: asyncpg.Pool) -> MonitoredSymbols:
+    """Active monitored-symbol universe wrapped in a typed snapshot."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT symbol, symbolid FROM monitored_symbols WHERE active = true;"
         )
-    return {r["symbol"]: r["symbolid"] for r in rows}
+    return MonitoredSymbols(by_symbol={r["symbol"]: r["symbolid"] for r in rows})
 
 
 async def load_latest_atr_map(pool: asyncpg.Pool) -> dict[int, float]:
@@ -287,26 +288,72 @@ async def load_latest_livestream_per_symbol(
                 SELECT symbolid, SUM(volume)::bigint AS cum_volume
                   FROM livestream
                  GROUP BY symbolid
+            ),
+            -- premarket_open = first bar of today's session per symbol.
+            -- Livestream is truncated per session, so MIN(ts) row's open
+            -- is the premarket open of the current session (typically the
+            -- 04:00 ET bar when trading first occurred).
+            pm_open AS (
+                SELECT DISTINCT ON (symbolid) symbolid, open AS pm_open
+                  FROM livestream
+                 ORDER BY symbolid, ts ASC
+            ),
+            -- prev_close = most recent daily close on disk per symbol.
+            -- In live mode the historian stops at today-1, so this is
+            -- yesterday's close (or Friday's on a Monday).
+            prev_close AS (
+                SELECT DISTINCT ON (symbolid) symbolid, close AS prev_close
+                  FROM daily
+                 ORDER BY symbolid, date DESC
             )
-            SELECT latest.*, cum_vol.cum_volume
+            SELECT latest.*,
+                   cum_vol.cum_volume,
+                   pm_open.pm_open,
+                   prev_close.prev_close
               FROM latest
-              LEFT JOIN cum_vol USING (symbolid);
+              LEFT JOIN cum_vol    USING (symbolid)
+              LEFT JOIN pm_open    USING (symbolid)
+              LEFT JOIN prev_close USING (symbolid);
             """
         )
-    return [
-        {
+    # Reference for the "Chg%" column switches with Helsinki wall-clock:
+    #   11:00 <= HKI <  16:30  -> premarket window: ref = prev_close
+    #   HKI  >= 16:30          -> regular hours   : ref = pm_open
+    #   HKI  <  11:00          -> off-session     : ref = prev_close
+    # Backend computes the derived value so the frontend just renders it.
+    now_hki = datetime.now(HELSINKI)
+    hki_minutes = now_hki.hour * 60 + now_hki.minute
+    in_premarket = 11 * 60 <= hki_minutes < 16 * 60 + 30
+
+    def _ref(pm_open: Optional[float], prev_close: Optional[float]) -> Optional[float]:
+        if in_premarket:
+            return prev_close
+        return pm_open if pm_open is not None else prev_close
+
+    def _chg_pct(close: Optional[float], ref: Optional[float]) -> Optional[float]:
+        if close is None or ref is None or ref == 0:
+            return None
+        return round((close - ref) / ref * 100.0, 2)
+
+    out = []
+    for r in rows:
+        close = float(r["close"]) if r["close"] is not None else None
+        pm_open = float(r["pm_open"]) if r["pm_open"] is not None else None
+        prev_close = float(r["prev_close"]) if r["prev_close"] is not None else None
+        ref = _ref(pm_open, prev_close)
+        out.append({
             "symbol": r["symbol"],
             "ts": r["ts"].isoformat(),
-            "close": float(r["close"]) if r["close"] is not None else None,
+            "close": close,
             "vwap": float(r["vwap"]) if r["vwap"] is not None else None,
             "ema9": float(r["ema9"]) if r["ema9"] is not None else None,
             "rvol_cum": float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
             "relatr": float(r["relatr"]) if r["relatr"] is not None else None,
             "volume": int(r["volume"]) if r["volume"] is not None else None,
             "cum_volume": int(r["cum_volume"]) if r["cum_volume"] is not None else None,
-        }
-        for r in rows
-    ]
+            "chg_pct": _chg_pct(close, ref),
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------

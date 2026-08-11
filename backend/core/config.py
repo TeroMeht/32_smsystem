@@ -43,6 +43,24 @@ class Settings(BaseSettings):
     HTTP_WORKERS_TICKER_DETAILS: int
     HTTP_WORKERS_GROUPED_DAILY:  int
 
+    # --- Historian / baseline knobs ---
+    # INTRADAY_BACKFILL_DAYS : calendar-day window fetched into intraday_bars
+    #                          (also the calendar window used for the RVOL
+    #                          baseline lookback -- 8 days guarantees >=5
+    #                          trading sessions after weekends/holidays).
+    # DAILY_BACKFILL_DAYS    : calendar-day window fetched into daily
+    #                          (20 days guarantees >=14 trading days for
+    #                          ATR14).
+    # RVOL_SAMPLE_SESSIONS   : trading sessions averaged into the baseline.
+    # DAILY_STALE_DAYS       : freshness threshold for daily -- older than
+    #                          this triggers a refetch (3 covers Fri->Mon).
+    # INTRADAY_STALE_DAYS    : same idea for intraday.
+    INTRADAY_BACKFILL_DAYS: int
+    DAILY_BACKFILL_DAYS:    int
+    RVOL_SAMPLE_SESSIONS:   int
+    DAILY_STALE_DAYS:       int
+    INTRADAY_STALE_DAYS:    int
+
     # --- Runtime mode ---
     # MODE = "live"    : historian aligns to wall-clock today, WS livestream
     #                    opens in the background.
@@ -59,8 +77,6 @@ class Settings(BaseSettings):
     REPLAY_DAY: date
     REPLAY_START_TIME: str
     REPLAY_SPEED: float
-    REPLAY_LOOKBACK_DAYS: int
-    REPLAY_SAMPLE_SESSIONS: int
 
     @model_validator(mode="after")
     def _normalize_mode(self) -> "Settings":

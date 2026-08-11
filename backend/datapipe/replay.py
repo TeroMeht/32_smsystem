@@ -13,12 +13,12 @@ Flow (all DB, no REST):
   2. Rebuild ``rvol_baseline`` from the days STRICTLY BEFORE the replay
      day. The baseline can't include the replay day itself -- that would
      leak future information into RVOL.
-  3. Truncate ``livestream`` (fresh session).
-  4. Prime per-symbol state (ATR + rvol baseline).
-  5. Load the chosen day's 1-min bars in one batched query, ordered by
+  3. Initialize per-symbol state (ATR + rvol baseline). livestream table
+     itself is emptied by pipeline.startup before we spawn.
+  4. Load the chosen day's 1-min bars in one batched query, ordered by
      timestamp -- so multi-symbol replays stay cross-symbol time-aligned
      without any Python-side merging.
-  6. For each bar, sleep ``(next.ts - current.ts) / speed`` seconds and
+  5. For each bar, sleep ``(next.ts - current.ts) / speed`` seconds and
      dispatch through ``process_bar``. ``speed = 0`` means "as fast as
      possible"; ``speed = 60`` compresses one minute of trading into one
      wall-clock second.
@@ -37,16 +37,16 @@ from typing import Optional
 
 import asyncpg
 
+from backend.core.config import settings
 from backend.database import rvol_baseline as rvol_baseline_db
 from backend.database.readers import (
-    load_active_symbol_map,
     load_intraday_bars_for_day,
     load_latest_atr_map,
     load_rvol_baseline_for_symbol,
 )
-from backend.database.writers import truncate_livestream
 from backend.datapipe.bar_processor import BarSink, process_bar
 from backend.datapipe.rest_client import RestClient  # kept for pipeline signature compat
+from backend.datapipe.schemas import MonitoredSymbols
 from backend.datapipe.session_state import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -56,24 +56,25 @@ logger = logging.getLogger(__name__)
 class ReplayConfig:
     day: date            # ET session date to replay
     speed: float         # 1.0 = wall clock, 60.0 = 1 real sec per replay minute, 0 = fastest
-    lookback_days: int   # calendar-day window used to rebuild the baseline
-    sample_sessions: int # trading sessions averaged into the baseline
     # Optional -- when set, bars earlier than this UTC instant are skipped.
     # VWAP/EMA/RVOL start accumulating from this point, as if a trader
     # turned on the system at that moment.
     start_utc: Optional[datetime] = None
 
+    # Baseline lookback / sample sessions come from ``settings`` (same
+    # values the historian uses), so replay and historian can't drift.
+
 
 # ---------------------------------------------------------------------------
-# state priming
+# state initialization
 # ---------------------------------------------------------------------------
 
 
-async def _prime_state_from_db(
+async def _initialize_state_from_db(
     pool: asyncpg.Pool,
     store: SessionStore,
     cfg: ReplayConfig,
-    symbol_map: dict[str, int],
+    symbol_map: MonitoredSymbols,
 ) -> None:
     """Load ATR + rvol_baseline into per-symbol state before we feed bars."""
     atr_map = await load_latest_atr_map(pool)
@@ -89,7 +90,7 @@ async def _prime_state_from_db(
         if not baseline:
             missing_baseline += 1
     logger.info(
-        "[replay] state primed -- %d symbols missing ATR, %d missing rvol baseline",
+        "state initialized -- %d symbols missing ATR, %d missing rvol baseline",
         missing_atr, missing_baseline,
     )
 
@@ -99,93 +100,83 @@ async def _prime_state_from_db(
 # ---------------------------------------------------------------------------
 
 
-async def run_replay(
+async def _consume(
     pool: asyncpg.Pool,
-    rest: RestClient,  # unused now; kept so pipeline.startup_replay signature holds
-    cfg: ReplayConfig,
-    sink: Optional[BarSink] = None,
+    store: SessionStore,
+    timeline: list,
+    speed: float,
+    sink: Optional[BarSink],
 ) -> None:
     """
-    Read replay-day bars from ``intraday_bars`` and stream them through
-    ``process_bar``. All work happens against the DB -- no REST calls.
-
-    Cancelling this coroutine mid-replay is safe: each ``process_bar`` call
-    is atomic and any bars already emitted stay in ``livestream``.
+    Drain the timeline one bar at a time through ``process_bar``. Between
+    bars, sleep ``(next.ts - current.ts) / speed`` seconds so multi-symbol
+    replays stay cross-symbol time-aligned; ``speed = 0`` skips the sleep.
+    Per-bar errors are logged and the loop continues.
     """
-    _ = rest  # deliberately unused
-
-    logger.info(
-        "[replay] ==> starting replay day=%s speed=%.2f lookback=%dd sample_sessions=%d",
-        cfg.day, cfg.speed, cfg.lookback_days, cfg.sample_sessions,
-    )
-
-    symbol_map = await load_active_symbol_map(pool)
-    if not symbol_map:
-        logger.warning("[replay] no active monitored symbols -- aborting")
-        return
-    logger.info("[replay] %d active symbols", len(symbol_map))
-
-    # 1. Rebuild baseline from sessions STRICTLY BEFORE the replay day.
-    #    end_day is exclusive in rebuild(), so passing cfg.day is correct.
-    logger.info("[replay] rebuilding rvol_baseline excluding replay day")
-    await rvol_baseline_db.rebuild(
-        pool, end_day=cfg.day,
-        lookback_days=cfg.lookback_days,
-        sample_sessions=cfg.sample_sessions,
-    )
-
-    # 2. Fresh livestream for this replay
-    await truncate_livestream(pool)
-
-    # 3. Prime in-memory state
-    store = SessionStore()
-    await _prime_state_from_db(pool, store, cfg, symbol_map)
-
-    # 4. Load the day's bars in one shot, already sorted by ts across all symbols
-    logger.info("[replay] loading intraday_bars for %s", cfg.day)
-    timeline = await load_intraday_bars_for_day(pool, cfg.day, symbol_map.values())
-    if not timeline:
-        logger.warning(
-            "[replay] no rows in intraday_bars for day=%s -- did the historian run for that day?",
-            cfg.day,
-        )
-        return
-
-    if cfg.start_utc is not None:
-        before = len(timeline)
-        timeline = [b for b in timeline if b.ts >= cfg.start_utc]
-        logger.info(
-            "[replay] start_utc=%s: dropped %d bars before that cutoff",
-            cfg.start_utc.isoformat(), before - len(timeline),
-        )
-        if not timeline:
-            logger.warning("[replay] no bars at or after start_utc -- nothing to play")
-            return
-
-    total = len(timeline)
-    distinct_syms = len({b.symbolid for b in timeline})
-    logger.info("[replay] timeline: %d bars across %d symbols (from ts=%s to %s)",
-                total, distinct_syms, timeline[0].ts.isoformat(), timeline[-1].ts.isoformat())
-
-    # 5. Step through
-    progress_step = max(1, total // 20)  # every ~5%
-    errors = 0
     prev_ts = None
-    for i, bar in enumerate(timeline):
-        if prev_ts is not None and cfg.speed > 0:
-            gap = (bar.ts - prev_ts).total_seconds() / cfg.speed
+    for bar in timeline:
+        if prev_ts is not None and speed > 0:
+            gap = (bar.ts - prev_ts).total_seconds() / speed
             if gap > 0:
                 await asyncio.sleep(gap)
         prev_ts = bar.ts
         try:
             await process_bar(pool, store, bar, sink=sink)
         except Exception:
-            errors += 1
-            logger.exception("[replay] process_bar failed for %s @ %s", bar.symbol, bar.ts)
+            logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)
 
-        if i and i % progress_step == 0:
-            pct = 100 * i / total
-            logger.info("[replay] progress: %d / %d bars (%.1f%%) errors=%d ts=%s",
-                        i, total, pct, errors, bar.ts.isoformat())
 
-    logger.info("[replay] ==> complete (%d bars, %d errors)", total, errors)
+async def run_replay(
+    pool: asyncpg.Pool,
+    rest: RestClient,  # unused here; kept for signature symmetry with run_livestream
+    cfg: ReplayConfig,
+    symbol_map: MonitoredSymbols,
+    sink: Optional[BarSink] = None,
+) -> None:
+    """
+    Rebuild baseline, initialize state, load today's timeline, then dispatch
+    to ``_consume`` for the step-through. NO reconnect: any failure
+    propagates to the caller.
+
+    Caller (pipeline.startup) supplies ``symbol_map`` -- already validated
+    non-empty there, so we don't re-check.
+    """
+    store = SessionStore()
+
+    logger.info(
+        "task started day=%s speed=%.2f lookback=%dd sample_sessions=%d",
+        cfg.day, cfg.speed,
+        settings.INTRADAY_BACKFILL_DAYS, settings.RVOL_SAMPLE_SESSIONS,
+    )
+
+    try:
+
+        await rvol_baseline_db.rebuild(
+            pool, end_day=cfg.day,
+            lookback_days=settings.INTRADAY_BACKFILL_DAYS,
+            sample_sessions=settings.RVOL_SAMPLE_SESSIONS,
+        )
+        await _initialize_state_from_db(pool, store, cfg, symbol_map)
+
+        timeline = await load_intraday_bars_for_day(pool, cfg.day, symbol_map.values())
+        if not timeline:
+            logger.warning(
+                "No rows in intraday_bars for day = %s",
+                cfg.day,
+            )
+            return
+        if cfg.start_utc is not None:
+            timeline = [b for b in timeline if b.ts >= cfg.start_utc]
+            if not timeline:
+                logger.warning("No bars at or after start_utc -- nothing to play")
+                return
+
+        await _consume(pool, store, timeline, cfg.speed, sink)
+        logger.info("replay complete")
+
+    except asyncio.CancelledError:
+        logger.info("Task cancelled -- exiting")
+        raise
+    except Exception:
+        logger.exception("Replay failed -- task will exit")
+        raise

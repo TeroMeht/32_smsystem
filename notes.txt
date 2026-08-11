@@ -1,2 +1,44 @@
 # To run stock universe process
 C:\codebase\dev\32_smsystem> python -m backend.stock_universe.run
+
+
+
+
+Then you have exactly two paths — nothing in between, and both have specific trade-offs:
+
+Path A — Named-tab trick + TV's saved layouts.
+
+Browsers won't let one origin (localhost) push data into a tab from another origin (tradingview.com) that you didn't open. Same-origin isolation is enforced. But — TradingView remembers your chart layout server-side and applies it automatically to any chart URL you open.
+
+Workflow:
+
+In your currently-open TV chart: menu → Layout → Save As Default (or a named layout you'll always come back to).
+Close that tab.
+First click on /relatr opens https://www.tradingview.com/chart/?symbol=SYM in a tab that your page names tradingview-chart.
+Because you're logged in and your default layout is set, TV loads your indicators, drawings, timeframes, colors — everything — on the new chart.
+Every subsequent click reuses that same named tab and just swaps the symbol. Indicators / drawings persist across symbol changes on the same layout.
+
+Net effect: you "lose" the current tab once, then it behaves exactly like a persistent TV window slaved to your row clicks.
+
+Caveats:
+
+Works only if you're logged into TradingView in the same browser profile.
+Free-tier accounts get one layout, so this trivially works. Paid accounts need "default layout" set to whichever one you want.
+Drawings that are anchored to a specific bar/date stay with the SYMBOL (via TV's server-side drawing store), so you won't see them on a different symbol — but that's TV's behavior, not something the URL trick imposes.
+If you close the named tab, the next click opens a new one. Chain resumes.
+
+Path B — Browser extension.
+
+The only way to talk to an arbitrary TV tab you opened yourself is a small extension:
+
+Content script sits on tradingview.com pages, listens for a message.
+Background listens for a window.postMessage from localhost:8000/relatr.
+On click, your page posts the ticker, extension finds the TV tab (chrome.tabs.query({url: '*://*.tradingview.com/*'})), focuses it, and either:
+Injects into the search box + submits, or
+Navigates the tab to the new symbol URL (equivalent to Path A but on the existing tab, no need to close it).
+
+Roughly 60 lines of extension boilerplate + a bit of DOM poking. Only worth it if you don't want to reset your current tab or you want to skip logging into TV.
+
+My honest take: Path A is what almost every trader I've seen for this exact workflow ends up using. It's five minutes of one-time setup (save layout as default) and then behaviorally identical to "push to open tab" for the rest of forever. Path B is only worth it if you're running multiple TV windows and need to target a specific one, or if you're on shared machines without a TV login.
+
+Want me to wire up Path A now that you know how it works?

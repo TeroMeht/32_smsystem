@@ -9,7 +9,7 @@ Sequence on startup:
     1. init_pool           -- asyncpg pool up
     2. drop_old_partitions -- respect retention before we write
     3. backfill_all_symbols (historian) -- daily + intraday + rvol_baseline
-    4. truncate_livestream -- fresh session
+    4. empty_livestream_table -- fresh session
     5. run_livestream      -- WS AM consumer, background task
 
 Replay mode replaces step 5 with ``run_replay(cfg)`` -- everything up to
@@ -25,7 +25,8 @@ import logging
 from backend.core.config import settings
 from backend.database.partitions import drop_old_partitions
 from backend.database.pool import close_pool, init_pool
-from backend.database.writers import truncate_livestream
+from backend.database.readers import load_active_symbol_map
+from backend.database.writers import empty_livestream_table
 from backend.datapipe.bar_processor import BarSink
 from backend.datapipe.historian import backfill_all_symbols
 from backend.datapipe.livestream import run_livestream
@@ -45,44 +46,31 @@ _rest: RestClient | None = None
 _live_task: asyncio.Task | None = None
 
 
-async def startup_live(sink: BarSink | None = None) -> None:
-    """
-    Unified startup for both MODE=live and MODE=replay. Named
-    ``startup_live`` for backward compatibility with main.py; the actual
-    mode is chosen from settings.MODE:
-
-      * live   -> historian aligned to wall-clock today, WS livestream in
-                  background.
-      * replay -> historian aligned to settings.REPLAY_DAY, then replay
-                  driver in background (no WS is opened).
-
-    Any failure between RestClient() and create_task() releases the
-    aiohttp session and pool cleanly before re-raising.
-    """
+async def startup(sink: BarSink | None = None) -> None:
     global _rest, _live_task
 
     mode = settings.MODE
     today = effective_today()
-    logger.info("[pipeline] MODE=%s effective_today=%s", mode, today)
-
-    logger.info("[pipeline] step 1/5: initializing asyncpg pool")
+    logger.info("MODE = %s effective_today = %s", mode, today)
     pool = await init_pool()
-    logger.info("[pipeline] step 1/5: pool ready")
+
+    # Fail fast: nothing further makes sense without an active universe.
+    symbol_map = await load_active_symbol_map(pool)
+    if not symbol_map:
+        await close_pool()
+        raise RuntimeError("no active symbols in monitored_symbols -- refusing to start")
+    logger.info("%d active symbols", len(symbol_map))
 
     _rest = RestClient()
     try:
-        logger.info("[pipeline] step 2/5: pruning partitions older than retention (today=%s)", today)
         await drop_old_partitions(pool, today)
+        await backfill_all_symbols(
+            pool, _rest, today, symbol_map, replay_mode=(mode == "replay"),
+        )
+        logger.info("Historian backfill complete")
 
-        logger.info("[pipeline] step 3/5: historian backfill starting")
-        await backfill_all_symbols(pool, _rest, today, replay_mode=(mode == "replay"))
-        logger.info("[pipeline] step 3/5: historian backfill complete")
-
-        # Truncate unconditionally so priming writes into a clean table.
-        # Every startup MUST re-pull today's bars from REST so any gaps
-        # left by the previous WS session get filled in.
-        logger.info("[pipeline] step 4/5: truncating livestream (fresh session; will be re-primed)")
-        await truncate_livestream(pool)
+        logger.info("Initializing livestream table")
+        await empty_livestream_table(pool)
 
         if mode == "replay":
             start_raw = (settings.REPLAY_START_TIME or "").strip()
@@ -93,53 +81,30 @@ async def startup_live(sink: BarSink | None = None) -> None:
             cfg = ReplayConfig(
                 day=settings.REPLAY_DAY,
                 speed=settings.REPLAY_SPEED,
-                lookback_days=settings.REPLAY_LOOKBACK_DAYS,
-                sample_sessions=settings.REPLAY_SAMPLE_SESSIONS,
                 start_utc=start_utc,
             )
-            logger.info(
-                "[pipeline] step 5/5: MODE=replay -- spawning replay task "
-                "(day=%s start=%s speed=%.2f lookback=%dd sample_sessions=%d)",
-                cfg.day, start_raw or "session-open (00:00 HKI)",
-                cfg.speed, cfg.lookback_days, cfg.sample_sessions,
+            _live_task = asyncio.create_task(
+                run_replay(pool, _rest, cfg, symbol_map, sink=sink),
             )
-            _live_task = asyncio.create_task(run_replay(pool, _rest, cfg, sink=sink))
-            logger.info("[pipeline] replay startup complete -- replay running in background")
+            logger.info("Replay startup complete")
         else:
-            logger.info("[pipeline] step 5/5: spawning livestream task")
-            _live_task = asyncio.create_task(run_livestream(pool, _rest, sink=sink))
-            logger.info("[pipeline] live startup complete -- livestream running in background")
+            _live_task = asyncio.create_task(
+                run_livestream(pool, _rest, symbol_map, sink=sink),
+            )
+            logger.info("Live market data startup complete")
     except Exception:
-        logger.exception("[pipeline] startup FAILED -- releasing resources")
+        logger.exception("Startup FAILED -- releasing resources")
         await _rest.close()
         _rest = None
         await close_pool()
         raise
 
 
-async def startup_replay(cfg: ReplayConfig, sink: BarSink | None = None) -> None:
-    """
-    Replay mode: read bars from ``intraday_bars`` (populated earlier by
-    the historian) and stream them through the shared processor. Blocks
-    until the replay finishes (unlike live mode).
-
-    Uses a local RestClient so we don't clobber the process-wide ``_rest``
-    that the live stream owns -- replay can safely be triggered while the
-    livestream task is running.
-    """
-    pool = await init_pool()
-    local_rest = RestClient()
-    try:
-        await run_replay(pool, local_rest, cfg, sink=sink)
-    finally:
-        await local_rest.close()
-
-
 async def shutdown() -> None:
     """Cancel background tasks + release network resources."""
     global _rest, _live_task
     if _live_task is not None and not _live_task.done():
-        logger.info("[pipeline] cancelling livestream task")
+        logger.info("Cancelling livestream/replay task")
         _live_task.cancel()
         try:
             await _live_task
@@ -147,9 +112,9 @@ async def shutdown() -> None:
             pass
         _live_task = None
     if _rest is not None:
-        logger.info("[pipeline] closing REST client")
+        logger.info("Closing REST client")
         await _rest.close()
         _rest = None
-    logger.info("[pipeline] closing DB pool")
+    logger.info("Closing DB pool")
     await close_pool()
-    logger.info("[pipeline] shutdown complete")
+    logger.info("Shutdown complete")

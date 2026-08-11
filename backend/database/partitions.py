@@ -103,16 +103,16 @@ async def drop_old_partitions(pool: asyncpg.Pool, today: date) -> None:
                 suffix = name.rsplit("_", 1)[-1]
                 part_date = date(int(suffix[0:4]), int(suffix[4:6]), int(suffix[6:8]))
             except (ValueError, IndexError):
-                logger.warning("skipping partition with unparseable name: %s", name)
+                logger.warning("Skipping partition with unparseable name: %s", name)
                 continue
 
             cutoff = intraday_cutoff if name.startswith("intraday_bars") else daily_cutoff
             if part_date < cutoff:
                 await conn.execute(f"DROP TABLE IF EXISTS {name};")
                 dropped.append(name)
-                logger.debug("[db.partitions] dropped %s (before %s)", name, cutoff)
+                logger.debug("Dropped %s (before %s)", name, cutoff)
 
     if dropped:
-        logger.info("[db.partitions] dropped %d partitions past retention", len(dropped))
+        logger.info("Dropped %d partitions past retention", len(dropped))
     else:
-        logger.info("[db.partitions] no partitions past retention (nothing to drop)")
+        logger.info("No partitions past retention (nothing to drop)")

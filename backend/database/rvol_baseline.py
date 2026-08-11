@@ -104,7 +104,7 @@ async def rebuild(
     """
     start_day = end_day - timedelta(days=lookback_days)
     logger.info(
-        "[db.rvol_baseline] rebuilding: calendar window [%s, %s) "
+        "Rebuilding: calendar window [%s, %s) "
         "-> take %d most recent trading sessions per symbol",
         start_day, end_day, sample_sessions,
     )
@@ -121,7 +121,7 @@ async def rebuild(
             "SELECT sample_days, COUNT(*) AS n "
             "FROM rvol_baseline GROUP BY sample_days ORDER BY sample_days DESC;"
         )
-    logger.info("[db.rvol_baseline] rebuild complete -- %d rows now in table", count)
+    logger.info("Rebuilding complete -- %d rows now in table", count)
     if dist_rows:
         dist = {r["sample_days"]: r["n"] for r in dist_rows}
-        logger.info("[db.rvol_baseline] sample_days distribution: %s", dist)
+

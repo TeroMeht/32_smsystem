@@ -10,7 +10,7 @@ Contract:
     reconnect re-subscribes to the current active set (in case the
     universe was refreshed while we were down).
   * Session boundary: the historian is called before we open the socket,
-    and ``truncate_livestream`` runs then so livestream = today only.
+    and ``empty_livestream_table`` runs then so livestream = today only.
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ import websockets
 
 from backend.core.config import settings
 from backend.database.readers import (
-    load_active_symbol_map,
     load_latest_atr_map,
     load_rvol_baseline_for_symbol,
 )
@@ -35,7 +34,7 @@ from backend.database.writers import bulk_insert_livestream_bars
 from backend.datapipe.bar_processor import BarSink, process_bar
 from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.rest_client import RestClient
-from backend.datapipe.schemas import AggregateMinuteMessage, Bar1m
+from backend.datapipe.schemas import AggregateMinuteMessage, Bar1m, MonitoredSymbols
 from backend.datapipe.session_state import SessionStore
 from backend.datapipe.time_utils import et_time_slot, session_date_et, to_helsinki
 
@@ -44,11 +43,11 @@ logger = logging.getLogger(__name__)
 
 
 
-async def _prime_livestream(
+async def _initialize_livestream(
     pool: asyncpg.Pool,
     rest: RestClient,
     store: SessionStore,
-    symbol_map: dict[str, int],
+    symbol_map: MonitoredSymbols,
     concurrency: int = 10,
 ) -> None:
     """
@@ -66,7 +65,7 @@ async def _prime_livestream(
 
     intraday_bars is NOT touched -- historian owns that table.
     """
-    logger.info("priming livestream from REST for %d symbols", len(symbol_map))
+    logger.info("initializing livestream from REST for %d symbols", len(symbol_map))
     today_et = session_date_et(datetime.now(timezone.utc))
 
     # ATR + baseline: cheap per-symbol reads, needed before enrichment.
@@ -121,7 +120,7 @@ async def _prime_livestream(
         await bulk_insert_livestream_bars(pool, all_enriched)
 
     logger.info(
-        "livestream primed -- session=%s bars=%d missing_ATR=%d missing_baseline=%d",
+        "livestream initialized -- session=%s bars=%d missing_ATR=%d missing_baseline=%d",
         today_et.isoformat(), len(all_enriched), missing_atr, missing_baseline,
     )
 
@@ -130,7 +129,7 @@ async def _consume(
     ws,
     pool: asyncpg.Pool,
     store: SessionStore,
-    symbol_map: dict[str, int],
+    symbol_map: MonitoredSymbols,
     sink: Optional[BarSink],
 ) -> None:
     """
@@ -183,7 +182,7 @@ async def _consume(
                 if bar.symbol not in seen_symbols:
                     seen_symbols.add(bar.symbol)
                     logger.info(
-                        " %s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d VWAP_bar=%s",
+                        "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d VWAP_bar=%s",
                         bar.symbol,
                         to_helsinki(bar.ts).strftime("%H:%M"),
                         bar.open, bar.high, bar.low, bar.close, bar.volume,
@@ -196,11 +195,15 @@ async def _consume(
 async def run_livestream(
     pool: asyncpg.Pool,
     rest: RestClient,
+    symbol_map: MonitoredSymbols,
     sink: Optional[BarSink] = None,
 ) -> None:
     """
     Fetch today's already-occurred bars via REST + enrich + write to
     livestream, then open the WS and extend it minute by minute.
+
+    Caller (pipeline.startup) supplies ``symbol_map`` -- already validated
+    non-empty there, so we don't re-check.
 
     intraday_bars is not touched by this path -- historian owns it.
     NO reconnect: any failure propagates to the caller.
@@ -208,16 +211,10 @@ async def run_livestream(
     store = SessionStore()
     url = settings.POLYGON_WS_URL
 
-    logger.info("task started (target URL=%s)", url)
-
     try:
-        symbol_map = await load_active_symbol_map(pool)
-        if not symbol_map:
-            raise RuntimeError("no active symbols in monitored_symbols -- refusing to connect")
+        await _initialize_livestream(pool, rest, store, symbol_map)
 
-        await _prime_livestream(pool, rest, store, symbol_map)
-
-        logger.info("connecting to %s (%d symbols)", url, len(symbol_map))
+        logger.info("Connecting to %s (%d symbols)", url, len(symbol_map))
         async with websockets.connect(url, max_size=8 * 1024 * 1024) as ws:
             await ws.send(json.dumps({"action": "auth", "params": settings.POLYGON_API_KEY}))
             sub_params = ",".join(f"AM.{s}" for s in symbol_map.keys())
@@ -225,11 +222,11 @@ async def run_livestream(
 
             await _consume(ws, pool, store, symbol_map, sink)
 
-        logger.warning("socket closed -- run_livestream returning")
+        logger.warning("Socket closed -- run_livestream returning")
 
     except asyncio.CancelledError:
-        logger.info("task cancelled -- exiting")
+        logger.info("Task cancelled -- exiting")
         raise
     except Exception:
-        logger.exception("livestream failed -- not reconnecting, task will exit")
+        logger.exception("Livestream failed -- not reconnecting, task will exit")
         raise

@@ -1,30 +1,24 @@
 """
 FastAPI entrypoint.
 
-Two responsibilities:
-
-  * On lifespan startup, call ``datapipe.pipeline.startup_live`` -- this
-    creates the DB pool, warms the historian, and spawns the WS livestream
-    background task.
+  * On lifespan startup, call ``datapipe.pipeline.startup`` -- this
+    creates the DB pool, warms the historian, and spawns the background
+    task (WS livestream in live mode, replay driver in replay mode).
   * On lifespan shutdown, cancel it via ``datapipe.pipeline.shutdown``.
 
-The replay endpoint (``POST /replay``) starts a replay run in the
-background. Live mode and replay mode aren't run at the same time in
-practice; the endpoint is provided as an operator escape hatch. In a
-production deploy you'd flip this via a config flag instead.
+Mode selection is driven entirely by settings.MODE / env; there is no
+runtime endpoint to switch or trigger replays.
 """
 
 from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import date
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 from backend.common.logging_config import setup_app_logging
 from backend.core.config import settings
@@ -34,7 +28,6 @@ from backend.database.readers import (
     load_livestream_bars_for_symbol,
 )
 from backend.datapipe import pipeline
-from backend.datapipe.replay import ReplayConfig
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +49,7 @@ async def lifespan(app: FastAPI):
     logger.info("32_smsystem starting up")
     logger.info("=" * 72)
     try:
-        await pipeline.startup_live()
+        await pipeline.startup()
         logger.info("32_smsystem ready -- serving HTTP")
         yield
     finally:
@@ -71,48 +64,6 @@ app = FastAPI(title="32_smsystem", lifespan=lifespan)
 # sibling modules with an absolute path (e.g. /ui/chart.js) that survives
 # whatever URL the page itself is served from.
 app.mount("/ui", StaticFiles(directory=FRONTEND_DIR), name="frontend")
-
-
-class ReplayRequest(BaseModel):
-    day: date            # ET session date to replay, e.g. "2026-08-07"
-    speed: float # default 60x = 1 replay minute per real second
-    lookback_days: int
-    sample_sessions: int
-
-
-@app.post("/replay")
-async def trigger_replay(req: ReplayRequest, background_tasks: BackgroundTasks):
-    """
-    Ad-hoc replay trigger. Only usable when the app was started in
-    MODE=live -- in MODE=replay a replay is already running from startup
-    and a second one would clobber the shared session state.
-    """
-    if settings.MODE == "replay":
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "App is running in MODE=replay -- a replay is already active "
-                "(REPLAY_DAY=%s). To run a different replay, restart with "
-                "different env vars." % settings.REPLAY_DAY
-            ),
-        )
-    cfg = ReplayConfig(
-        day=req.day,
-        speed=req.speed,
-        lookback_days=req.lookback_days,
-        sample_sessions=req.sample_sessions,
-    )
-    logger.info(
-        "[api] /replay requested: day=%s speed=%.2f lookback=%dd sample_sessions=%d",
-        req.day, req.speed, req.lookback_days, req.sample_sessions,
-    )
-    background_tasks.add_task(pipeline.startup_replay, cfg)
-    return {
-        "status": "scheduled",
-        "day": req.day.isoformat(),
-        "speed": req.speed,
-        "note": "follow progress in the app logs",
-    }
 
 
 @app.get("/health")

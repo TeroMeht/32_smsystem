@@ -26,39 +26,26 @@ from datetime import date, timedelta
 import asyncpg
 import pandas as pd
 
+from backend.core.config import settings
 from backend.database import rvol_baseline as rvol_baseline_db
 from backend.database.partitions import (
     DAILY_RETENTION_DAYS,
     INTRADAY_RETENTION_DAYS,
-    drop_old_partitions,
     ensure_partition_daily,
     ensure_partition_intraday,
     ensure_partitions_for_dates,
 )
-from backend.database.readers import (
-    load_active_symbol_map,
-    load_readiness_snapshot,
-)
+from backend.database.readers import load_readiness_snapshot
 from backend.database.writers import (
     bulk_insert_daily_bars,
     bulk_insert_intraday_bars,
 )
 from backend.datapipe.calculations import compute_atr_series
 from backend.datapipe.rest_client import RestClient
-from backend.datapipe.schemas import Bar1m, DailyBar
+from backend.datapipe.schemas import Bar1m, DailyBar, MonitoredSymbols
 from backend.datapipe.time_utils import session_date_et
 
 logger = logging.getLogger(__name__)
-
-
-INTRADAY_BACKFILL_DAYS = 8    # 8 calendar days guarantees >=5 trading sessions
-DAILY_BACKFILL_DAYS = 20      # 20 calendar days guarantees >=14 trading days
-RVOL_SAMPLE_SESSIONS = 5      # RVOL baseline averages this many trading sessions
-
-# Freshness thresholds used to decide whether a symbol needs any backfill.
-DAILY_STALE_DAYS = 3             # covers weekend restarts (Fri -> Mon)
-INTRADAY_STALE_DAYS = 3          # same idea for intraday -- a Fri close is
-                                 # still "current" on a Sun/Mon restart
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +60,7 @@ async def _backfill_daily_for_symbol(
     up_to: date,
 ) -> list[DailyBar]:
     """Fetch daily bars + compute ATR14 + return DailyBar list ready to insert."""
-    raw = await rest.fetch_daily_bars(symbol, end_day=up_to, lookback_days=DAILY_BACKFILL_DAYS)
+    raw = await rest.fetch_daily_bars(symbol, end_day=up_to, lookback_days=settings.DAILY_BACKFILL_DAYS)
     if not raw:
         return []
     df = pd.DataFrame([
@@ -118,6 +105,7 @@ async def backfill_all_symbols(
     pool: asyncpg.Pool,
     rest: RestClient,
     today: date,
+    symbol_map: MonitoredSymbols,
     concurrency: int = 10,
     replay_mode: bool = False,
 ) -> None:
@@ -135,19 +123,17 @@ async def backfill_all_symbols(
     (in live mode) or the replay driver (in replay mode) fills the small
     gap forward from there. A wall-clock threshold makes no sense on a
     delayed feed and triggered full-day refetches on every restart.
-    """
-    symbol_map = await load_active_symbol_map(pool)
-    if not symbol_map:
-        logger.warning("[historian] no active monitored symbols -- nothing to backfill")
-        return
 
+    Partition retention (``drop_old_partitions``) and universe loading are
+    both handled by ``pipeline.startup`` before this runs -- we just make
+    sure the forward-looking partitions exist.
+    """
     total = len(symbol_map)
-    logger.info("[historian] readiness check for %d symbols (today=%s, replay_mode=%s)",
+    logger.info("Backfill data check for %d symbols (today= %s, replay_mode= %s)",
                 total, today.isoformat(), replay_mode)
 
-    # 1. Retention prune + partition creation.
-    await drop_old_partitions(pool, today)
-    intraday_start = today - timedelta(days=INTRADAY_BACKFILL_DAYS)
+    # 1. Ensure partitions exist for the retention window forward.
+    intraday_start = today - timedelta(days=settings.INTRADAY_BACKFILL_DAYS)
     intraday_days = [today - timedelta(days=i) for i in range(INTRADAY_RETENTION_DAYS)]
     daily_days = [today - timedelta(days=i) for i in range(DAILY_RETENTION_DAYS)]
     await ensure_partitions_for_dates(pool, intraday_days, daily_days)
@@ -155,7 +141,7 @@ async def backfill_all_symbols(
     # 2. Batched readiness snapshot -- two aggregate queries, no per-symbol I/O
     daily_map, intraday_map = await load_readiness_snapshot(pool)
 
-    daily_cutoff_date = today - timedelta(days=DAILY_STALE_DAYS)
+    daily_cutoff_date = today - timedelta(days=settings.DAILY_STALE_DAYS)
 
     daily_todo: list[tuple[str, int]] = []
     intraday_todo: list[tuple[str, int, date]] = []  # (symbol, symbolid, need_from)
@@ -171,7 +157,7 @@ async def backfill_all_symbols(
     # INTRADAY_STALE_DAYS calendar days. This tolerates weekends/holidays
     # where "yesterday" was not a trading day and we correctly have data
     # from the last trading session (e.g. Friday on a Monday restart).
-    intraday_stale_cutoff = today - timedelta(days=INTRADAY_STALE_DAYS)
+    intraday_stale_cutoff = today - timedelta(days=settings.INTRADAY_STALE_DAYS)
 
     for symbol, symbolid in symbol_map.items():
         last_d = daily_map.get(symbolid)
@@ -190,13 +176,13 @@ async def backfill_all_symbols(
             intraday_todo.append((symbol, symbolid, need_from))
 
     logger.info(
-        "[historian] readiness: %d symbols ready, %d need daily, %d need intraday",
+        "Backfill readiness: %d symbols ready, %d need daily, %d need intraday",
         total - max(len(daily_todo), len(intraday_todo)),
         len(daily_todo), len(intraday_todo),
     )
 
     if not daily_todo and not intraday_todo:
-        logger.info("[historian] nothing to backfill -- all symbols current")
+        logger.info("Nothing to backfill -- all symbols has current data")
     else:
         await _run_backfill_workers(
             pool, rest, today, fetch_end, daily_todo, intraday_todo, concurrency,
@@ -206,12 +192,12 @@ async def backfill_all_symbols(
     #    and guarantees the table reflects whatever is currently in intraday_bars.
     logger.info(
         "[historian] rebuilding rvol_baseline (lookback=%dd, sample_sessions=%d)",
-        INTRADAY_BACKFILL_DAYS, RVOL_SAMPLE_SESSIONS,
+        settings.INTRADAY_BACKFILL_DAYS, settings.RVOL_SAMPLE_SESSIONS,
     )
     await rvol_baseline_db.rebuild(
         pool, end_day=today,
-        lookback_days=INTRADAY_BACKFILL_DAYS,
-        sample_sessions=RVOL_SAMPLE_SESSIONS,
+        lookback_days=settings.INTRADAY_BACKFILL_DAYS,
+        sample_sessions=settings.RVOL_SAMPLE_SESSIONS,
     )
 
     logger.info("[historian] backfill complete")
@@ -245,7 +231,7 @@ async def _run_backfill_workers(
         done += unit_done
         if done % progress_step < unit_done or done == total_units:
             logger.info(
-                "[historian] progress: %d/%d units (daily_rows=%d intraday_rows=%d errors=%d)",
+                "Backfill progress: %d/%d units (daily_rows= %d intraday_rows= %d errors= %d)",
                 done, total_units,
                 counters["daily_rows"], counters["intraday_rows"], counters["errors"],
             )
@@ -295,6 +281,6 @@ async def _run_backfill_workers(
     await asyncio.gather(*tasks)
 
     logger.info(
-        "[historian] fetch complete: %d daily rows, %d intraday rows, %d errors",
+        "Backfilling complete: %d daily rows, %d intraday rows, %d errors",
         counters["daily_rows"], counters["intraday_rows"], counters["errors"],
     )

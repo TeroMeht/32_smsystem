@@ -88,9 +88,11 @@
   <table id="tbl">
     <thead>
       <tr>
+        <th>#</th>
         <th>Symbol</th>
         <th>Time</th>
         <th>Close</th>
+        <th>Chg%</th>
         <th>VWAP</th>
         <th>EMA9</th>
         <th>RVOL</th>
@@ -110,7 +112,7 @@
   // Backend now returns the LATEST bar per symbol, unfiltered. All
   // display thresholds live here so they can be changed by editing this
   // one file, no server restart or SQL change needed.
-  const MIN_RELATR     = 0.05;
+  const MIN_RELATR     = 0.45;
   const MIN_RVOL       = 2.0;
   const MIN_VOLUME     = 1000;    // this-bar volume
   const MIN_CUM_VOLUME = 100000;      // today's session cumulative volume
@@ -177,7 +179,9 @@
 
       const seen = new Set();
       const frag = document.createDocumentFragment();
+      let rank = 0;
       for (const row of rows) {
+        rank += 1;
         seen.add(row.symbol);
         const tr = document.createElement('tr');
         tr.dataset.symbol = row.symbol;
@@ -185,14 +189,21 @@
         if (changed) tr.classList.add('updated');
         lastTsBySymbol.set(row.symbol, row.ts);
 
+        // Color convention: RED for positive RelATR (price extended below
+        // VWAP), GREEN for negative (price above VWAP).
         const rel = row.relatr;
-        const relClass = rel > 0 ? 'pos' : (rel < 0 ? 'neg' : '');
+        const relClass = rel > 0 ? 'neg' : (rel < 0 ? 'pos' : '');
         if (row.symbol === selectedSymbol) tr.classList.add('selected');
 
+        const chg = row.chg_pct;
+        const chgClass = chg == null ? '' : (chg > 0 ? 'pos' : (chg < 0 ? 'neg' : ''));
+
         tr.innerHTML = `
+          <td>${rank}</td>
           <td>${row.symbol}</td>
           <td>${fmtTime(row.ts)}</td>
           <td>${fmt(row.close, 2)}</td>
+          <td class="${chgClass}">${chg == null ? '-' : chg.toFixed(2) + '%'}</td>
           <td>${fmt(row.vwap, 2)}</td>
           <td>${fmt(row.ema9, 2)}</td>
           <td>${fmt(row.rvol_cum, 2)}</td>
