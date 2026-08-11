@@ -35,7 +35,7 @@ from backend.database.partitions import (
     ensure_partition_intraday,
     ensure_partitions_for_dates,
 )
-from backend.database.readers import load_readiness_snapshot
+
 from backend.database.writers import (
     bulk_insert_daily_bars,
     bulk_insert_intraday_bars,
@@ -146,44 +146,16 @@ async def backfill_all_symbols(
     daily_days = [today - timedelta(days=i) for i in range(DAILY_RETENTION_DAYS)]
     await ensure_partitions_for_dates(pool, intraday_days, daily_days)
 
-    # 2. Batched readiness snapshot -- two aggregate queries, no per-symbol I/O
-    daily_map, intraday_map = await load_readiness_snapshot(pool)
-
     daily_todo: list[tuple[str, int]] = []
-    intraday_todo: list[tuple[str, int, date]] = []  # (symbol, symbolid, need_from)
+    intraday_todo: list[tuple[str, int, date]] = []
 
-    # Target last date for intraday_bars depends on mode:
-    #   live   -> yesterday. livestream primes today via REST, historian
-    #             stays out of today entirely (baseline material only).
-    #   replay -> today (= REPLAY_DAY). Replay driver reads that day out
-    #             of intraday_bars, so it must be there.
+    # Same fetch target logic as before
     fetch_end = today if replay_mode else today - timedelta(days=1)
 
-    # Freshness rule (calendar-aware, no knobs):
-    #   "The newest data on disk must cover through the last completed
-    #    trading day."  On Tue that's Mon; on Mon that's Fri.
-    # Anything older triggers a refetch. Holidays not modeled -- worst
-    # case is one wasted REST call per symbol.
-    required_through = previous_trading_day(today)
-
+    # Add every symbol to both queues
     for symbol, symbolid in symbol_map.items():
-        last_d = daily_map.get(symbolid)
-        if last_d is None or last_d < required_through:
-            daily_todo.append((symbol, symbolid))
-
-        last_ts = intraday_map.get(symbolid)
-        if last_ts is None:
-            # Brand-new symbol: fetch the full backfill window.
-            intraday_todo.append((symbol, symbolid, intraday_start))
-            continue
-
-        have_date = session_date_et(last_ts)
-        if have_date < required_through:
-            # Incremental catch-up: start from the day AFTER what's on
-            # disk, clamped upward to the retention floor so we never
-            # ask for older than the intraday backfill window allows.
-            need_from = max(have_date + timedelta(days=1), intraday_start)
-            intraday_todo.append((symbol, symbolid, need_from))
+        daily_todo.append((symbol, symbolid))
+        intraday_todo.append((symbol, symbolid, intraday_start))
 
     logger.info(
         "Backfill readiness: %d symbols ready, %d need daily, %d need intraday",
@@ -278,7 +250,7 @@ async def _run_backfill_workers(
                     counters["intraday_rows"] += len(intraday)
             except Exception:
                 counters["errors"] += 1
-                logger.exception("[historian] %s: intraday backfill failed", symbol)
+                logger.exception("%s: intraday backfill failed", symbol)
             finally:
                 _tick(1)
 

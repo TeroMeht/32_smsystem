@@ -179,15 +179,13 @@ async def _consume(
             bar: Bar1m = msg.to_bar1m(symbolid=sid)
             try:
                 await process_bar(pool, store, bar, sink=sink)
-                if bar.symbol not in seen_symbols:
-                    seen_symbols.add(bar.symbol)
-                    logger.info(
-                        "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d VWAP_bar=%s",
-                        bar.symbol,
-                        to_helsinki(bar.ts).strftime("%H:%M"),
-                        bar.open, bar.high, bar.low, bar.close, bar.volume,
-                        f"{bar.vwap_bar:.4f}" if bar.vwap_bar is not None else "-",
-                    )
+                logger.info(
+                    "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d VWAP_bar=%s",
+                    bar.symbol,
+                    to_helsinki(bar.ts).strftime("%H:%M"),
+                    bar.open, bar.high, bar.low, bar.close, bar.volume,
+                    f"{bar.vwap_bar:.4f}" if bar.vwap_bar is not None else "-",
+                )
             except Exception:
                 logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)
 

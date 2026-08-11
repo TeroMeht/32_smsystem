@@ -418,27 +418,3 @@ async def load_livestream_bars_for_symbol_today(
         for r in rows
     ]
 
-
-async def load_readiness_snapshot(
-    pool: asyncpg.Pool,
-) -> tuple[dict[int, date], dict[int, datetime]]:
-    """
-    Single-shot snapshot of what we already have per symbolid:
-
-      * ``daily_map``    -- symbolid -> most recent date in ``daily``
-      * ``intraday_map`` -- symbolid -> most recent ts in ``intraday_bars``
-
-    The historian uses this at startup to decide, per symbol, whether we
-    can skip fetching entirely. Two aggregate queries beat 1712 per-symbol
-    round trips by orders of magnitude.
-    """
-    async with pool.acquire() as conn:
-        daily_rows = await conn.fetch(
-            "SELECT symbolid, MAX(date) AS d FROM daily GROUP BY symbolid;"
-        )
-        intraday_rows = await conn.fetch(
-            "SELECT symbolid, MAX(ts) AS ts FROM intraday_bars GROUP BY symbolid;"
-        )
-    daily_map = {r["symbolid"]: r["d"] for r in daily_rows if r["d"] is not None}
-    intraday_map = {r["symbolid"]: r["ts"] for r in intraday_rows if r["ts"] is not None}
-    return daily_map, intraday_map

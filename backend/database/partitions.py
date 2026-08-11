@@ -67,7 +67,7 @@ async def ensure_partitions_for_dates(
         await ensure_partition_intraday(pool, d)
     for d in daily:
         await ensure_partition_daily(pool, d)
-    logger.info("ensured %d intraday_bars + %d daily partitions",
+    logger.debug("ensured %d intraday_bars + %d daily partitions",
                 len(intra), len(daily))
 
 

@@ -44,11 +44,13 @@ from backend.database.readers import (
     load_latest_atr_map,
     load_rvol_baseline_for_symbol,
 )
+from backend.database.writers import bulk_insert_livestream_bars
 from backend.datapipe.bar_processor import BarSink, process_bar
+from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.rest_client import RestClient  # kept for pipeline signature compat
-from backend.datapipe.schemas import MonitoredSymbols
+from backend.datapipe.schemas import Bar1m, MonitoredSymbols
 from backend.datapipe.session_state import SessionStore
-from backend.datapipe.time_utils import to_helsinki
+from backend.datapipe.time_utils import et_time_slot, to_helsinki
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +59,13 @@ logger = logging.getLogger(__name__)
 class ReplayConfig:
     day: date            # ET session date to replay
     speed: float         # 1.0 = wall clock, 60.0 = 1 real sec per replay minute, 0 = fastest
-    # Optional -- when set, bars earlier than this UTC instant are skipped.
-    # VWAP/EMA/RVOL start accumulating from this point, as if a trader
-    # turned on the system at that moment.
+    # Optional -- when set, splits the session at this UTC instant:
+    #   * bars STRICTLY BEFORE start_utc are treated as "already occurred"
+    #     -- enriched into per-symbol state AND written to livestream in
+    #     one bulk insert, exactly the way live's REST-prime works.
+    #   * bars at/after start_utc are consumed one-by-one at the requested
+    #     speed. VWAP/EMA/RVOL therefore see the FULL session context, and
+    #     the /relatr endpoint has data from the moment startup finishes.
     start_utc: Optional[datetime] = None
 
     # Baseline lookback / sample sessions come from ``settings`` (same
@@ -93,6 +99,47 @@ async def _initialize_state_from_db(
     logger.info(
         "state initialized -- %d symbols missing ATR, %d missing rvol baseline",
         missing_atr, missing_baseline,
+    )
+
+
+async def _initialize_livestream_from_prefix(
+    pool: asyncpg.Pool,
+    store: SessionStore,
+    prefix: list[Bar1m],
+    session_date: date,
+) -> None:
+    """
+    Enrich pre-cutoff bars in ts order, append to per-symbol session
+    state, and bulk-insert the enriched result into ``livestream``.
+
+    Mirrors ``livestream._initialize_livestream`` semantics -- the only
+    difference is the source (rows already on disk in ``intraday_bars``
+    instead of a REST fetch). Result: /relatr sees a fully-populated
+    livestream table the instant startup finishes, and per-symbol VWAP /
+    EMA / RVOL accumulators are seeded with the whole session so far.
+    """
+    if not prefix:
+        return
+    all_enriched: list[Bar1m] = []
+    for bar in prefix:
+        st = store.get_or_init(bar.symbol, bar.symbolid, session_date)
+        slot = et_time_slot(bar.ts)
+        slot_avg = st.baseline_for_slot(slot)
+        enriched = enrich_bar(
+            new_bar=bar,
+            history=st.history,
+            atr=st.atr,
+            baseline_slot_avg=slot_avg,
+            baseline_history_sum=st.baseline_history_sum,
+        )
+        st.history.append(enriched)
+        st.baseline_history_sum += slot_avg
+        all_enriched.append(enriched)
+
+    await bulk_insert_livestream_bars(pool, all_enriched)
+    logger.info(
+        "Primed livestream with %d prefix bars (session=%s)",
+        len(all_enriched), session_date.isoformat(),
     )
 
 
@@ -176,18 +223,26 @@ async def run_replay(
 
         timeline = await load_intraday_bars_for_day(pool, cfg.day, symbol_map.values())
         if not timeline:
+            logger.warning("No rows in intraday_bars for day = %s", cfg.day)
+            return
+
+        # Split at start_utc: prefix primes livestream + state (so /relatr
+        # is populated immediately), tail is streamed through the consumer.
+        if cfg.start_utc is not None:
+            prefix = [b for b in timeline if b.ts < cfg.start_utc]
+            tail   = [b for b in timeline if b.ts >= cfg.start_utc]
+        else:
+            prefix, tail = [], timeline
+
+        await _initialize_livestream_from_prefix(pool, store, prefix, cfg.day)
+
+        if not tail:
             logger.warning(
-                "No rows in intraday_bars for day = %s",
-                cfg.day,
+                "No bars at or after start_utc -- livestream primed, nothing to stream",
             )
             return
-        if cfg.start_utc is not None:
-            timeline = [b for b in timeline if b.ts >= cfg.start_utc]
-            if not timeline:
-                logger.warning("No bars at or after start_utc -- nothing to play")
-                return
 
-        await _consume(pool, store, timeline, cfg.speed, sink)
+        await _consume(pool, store, tail, cfg.speed, sink)
         logger.info("replay complete")
 
     except asyncio.CancelledError:
