@@ -4,8 +4,7 @@ Smoke test for bar_processor.process_bar.
 Uses a stub asyncpg pool so we don't need a live DB. The point is to
 verify enrich + persistence + session state + sink callback all wire
 together, and that each bar's RVOL is today's cum volume divided by
-the pre-stored cumulative baseline for that ET slot (no accumulator --
-the baseline row is already cumulative through that slot).
+the accumulated per-bar baseline for the bar's Helsinki-time slot.
 """
 
 from __future__ import annotations
@@ -56,12 +55,13 @@ async def test_process_bar_enriches_and_accumulates_history():
 
     # Per-bar baselines (NOT cumulative). The bar_processor sums them on
     # the fly to form the RVOL denominator.
-    #    09:30 slot: per-bar avg vol = 500
-    #    09:31 slot: per-bar avg vol = 600
+    #    16:30 slot: per-bar avg vol = 500
+    #    16:31 slot: per-bar avg vol = 600
     b0 = _bar(0, 100.0, 1000)
     st = store.get_or_init(b0.symbol, b0.symbolid, b0.ts.date())
-    # baseline is keyed by ET slot; 13:30/13:31 UTC == 09:30/09:31 ET (Aug is EDT)
-    st.rvol_baseline = {time(9, 30): 500.0, time(9, 31): 600.0}
+    # baseline is keyed by Helsinki slot;
+    # 13:30/13:31 UTC == 16:30/16:31 Helsinki (Aug is EEST, UTC+3).
+    st.rvol_baseline = {time(16, 30): 500.0, time(16, 31): 600.0}
     st.atr = 1.0
 
     out = await process_bar(pool, store, b0, sink=sink)

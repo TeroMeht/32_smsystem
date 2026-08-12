@@ -1,10 +1,12 @@
 """
-Daily-partition management for ``intraday_bars`` and ``daily``.
+Daily-partition management for ``intraday_bars``, ``daily``, and
+``daily_indicators``.
 
-Schema declares both tables PARTITION BY RANGE (ts) / (date). Every
-session-day needs its own partition; retention is 5 days for intraday and
-14 days for daily. This module creates today's partitions on startup and
-drops the ones older than the retention window.
+Schema declares all three tables PARTITION BY RANGE (ts / date). Every
+session-day needs its own partition; retention is 5 trading days for
+intraday and 14 for daily / daily_indicators. This module creates
+today's partitions on startup and drops the ones older than the
+retention window.
 
 Design note: partition names use the ``YYYYMMDD`` suffix already used in
 ``schema.sql`` (e.g. ``intraday_bars_20260807``). We rebuild names from
@@ -19,11 +21,9 @@ from typing import Iterable
 
 import asyncpg
 
+from backend.core.config import settings
+
 logger = logging.getLogger(__name__)
-
-
-INTRADAY_RETENTION_DAYS = 8   # 8 calendar days guarantees 5 trading sessions
-DAILY_RETENTION_DAYS = 14
 
 
 def _part_name(base: str, d: date) -> str:
@@ -55,36 +55,56 @@ async def ensure_partition_daily(pool: asyncpg.Pool, d: date) -> None:
     logger.debug("ensured %s", name)
 
 
+async def ensure_partition_daily_indicators(pool: asyncpg.Pool, d: date) -> None:
+    """CREATE the daily_indicators partition for ``d`` if missing."""
+    name = _part_name("daily_indicators", d)
+    end = d + timedelta(days=1)
+    sql = (
+        f"CREATE TABLE IF NOT EXISTS {name} PARTITION OF daily_indicators "
+        f"FOR VALUES FROM ('{d.isoformat()}') TO ('{end.isoformat()}');"
+    )
+    async with pool.acquire() as conn:
+        await conn.execute(sql)
+    logger.debug("ensured %s", name)
+
+
 async def ensure_partitions_for_dates(
     pool: asyncpg.Pool,
     intraday_dates: Iterable[date],
     daily_dates: Iterable[date],
 ) -> None:
-    """Batch helper called by the historian before bulk-inserting bars."""
+    """
+    Batch helper called by the historian before bulk-inserting bars.
+    ``daily_dates`` covers both the raw ``daily`` and the derived
+    ``daily_indicators`` partitions (same partition grid).
+    """
     intra = sorted(set(intraday_dates))
     daily = sorted(set(daily_dates))
     for d in intra:
         await ensure_partition_intraday(pool, d)
     for d in daily:
         await ensure_partition_daily(pool, d)
-    logger.debug("ensured %d intraday_bars + %d daily partitions",
+        await ensure_partition_daily_indicators(pool, d)
+    logger.debug("ensured %d intraday_bars + %d daily/daily_indicators partitions",
                 len(intra), len(daily))
 
 
 async def drop_old_partitions(pool: asyncpg.Pool, today: date) -> None:
     """
-    Drop intraday partitions older than ``today - INTRADAY_RETENTION_DAYS``
-    and daily partitions older than ``today - DAILY_RETENTION_DAYS``.
+    Drop intraday partitions older than ``today - settings.INTRADAY_BACKFILL_DAYS``
+    and daily / daily_indicators partitions older than
+    ``today - settings.DAILY_BACKFILL_DAYS``.
 
-    Retention is enforced by dropping the partition table entirely (fast --
-    no row-by-row delete). Safe to run on every startup; missing tables are
-    simply ignored (IF EXISTS).
+    Retention window equals the backfill window -- whatever we fetch is
+    kept, and everything older gets dropped by dropping the partition
+    table entirely (fast, no row-by-row delete). Safe to run on every
+    startup; missing tables are ignored (IF EXISTS).
     """
-    # Retention semantics: "N-day retention" means we keep N dates
-    # inclusive of today -- so the earliest kept partition is
-    # today - (N - 1), and anything strictly before that gets dropped.
-    intraday_cutoff = today - timedelta(days=INTRADAY_RETENTION_DAYS - 1)
-    daily_cutoff = today - timedelta(days=DAILY_RETENTION_DAYS - 1)
+    # Retention semantics: "N-day window" means we keep N dates inclusive
+    # of today -- so the earliest kept partition is today - (N - 1), and
+    # anything strictly before that gets dropped.
+    intraday_cutoff = today - timedelta(days=settings.INTRADAY_BACKFILL_DAYS - 1)
+    daily_cutoff    = today - timedelta(days=settings.DAILY_BACKFILL_DAYS    - 1)
     dropped: list[str] = []
 
     async with pool.acquire() as conn:
@@ -94,7 +114,7 @@ async def drop_old_partitions(pool: asyncpg.Pool, today: date) -> None:
               FROM pg_inherits i
               JOIN pg_class c ON c.oid = i.inhrelid
               JOIN pg_class p ON p.oid = i.inhparent
-             WHERE p.relname IN ('intraday_bars', 'daily')
+             WHERE p.relname IN ('intraday_bars', 'daily', 'daily_indicators')
             """
         )
         for r in rows:
@@ -106,6 +126,8 @@ async def drop_old_partitions(pool: asyncpg.Pool, today: date) -> None:
                 logger.warning("Skipping partition with unparseable name: %s", name)
                 continue
 
+            # intraday_bars keeps the tighter window; daily + daily_indicators
+            # share the 14-day retention.
             cutoff = intraday_cutoff if name.startswith("intraday_bars") else daily_cutoff
             if part_date < cutoff:
                 await conn.execute(f"DROP TABLE IF EXISTS {name};")
@@ -113,6 +135,9 @@ async def drop_old_partitions(pool: asyncpg.Pool, today: date) -> None:
                 logger.debug("Dropped %s (before %s)", name, cutoff)
 
     if dropped:
-        logger.info("Dropped %d partitions past retention", len(dropped))
+        logger.info(
+            "Dropped %d partition(s) past retention: %s",
+            len(dropped), ", ".join(sorted(dropped)),
+        )
     else:
         logger.info("No partitions past retention (nothing to drop)")

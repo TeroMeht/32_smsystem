@@ -226,21 +226,20 @@ async def bulk_insert_intraday_bars(
 
 
 # ---------------------------------------------------------------------------
-# daily (historian only)
+# daily (raw ingestion; historian only)
 # ---------------------------------------------------------------------------
 
 
 _INSERT_DAILY_SQL = """
     INSERT INTO daily
-        (symbolid, date, open, high, low, close, volume, atr)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        (symbolid, date, open, high, low, close, volume)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     ON CONFLICT (symbolid, date) DO UPDATE SET
-        open = EXCLUDED.open,
-        high = EXCLUDED.high,
-        low = EXCLUDED.low,
-        close = EXCLUDED.close,
-        volume = EXCLUDED.volume,
-        atr = EXCLUDED.atr;
+        open   = EXCLUDED.open,
+        high   = EXCLUDED.high,
+        low    = EXCLUDED.low,
+        close  = EXCLUDED.close,
+        volume = EXCLUDED.volume;
 """
 
 
@@ -249,15 +248,14 @@ async def bulk_insert_daily_bars(
     bars: Iterable[DailyBar],
 ) -> None:
     """
-    Backfill bulk insert into daily. Same COPY-into-temp pattern as
-    bulk_insert_intraday_bars -- see that docstring for rationale.
+    Backfill bulk insert into ``daily`` (raw OHLCV only).
 
-    ATR is included in the DO UPDATE branch because a fresh ATR14
-    computation from a wider window can legitimately produce a different
-    value for the same date, and we want the newest one.
+    Same COPY-into-temp pattern as bulk_insert_intraday_bars -- see that
+    docstring for rationale. Derived fields (ATR, etc.) are written by
+    ``bulk_insert_daily_indicators`` in a separate phase.
     """
     rows = [
-        (b.symbolid, b.d, b.open, b.high, b.low, b.close, b.volume, b.atr)
+        (b.symbolid, b.d, b.open, b.high, b.low, b.close, b.volume)
         for b in bars
     ]
     if not rows:
@@ -273,22 +271,71 @@ async def bulk_insert_daily_bars(
                     high      numeric(12,4),
                     low       numeric(12,4),
                     close     numeric(12,4),
-                    volume    bigint,
-                    atr       numeric(12,4)
+                    volume    bigint
                 ) ON COMMIT DROP;
                 """
             )
             await conn.copy_records_to_table(
                 "_stage_daily",
                 records=rows,
-                columns=["symbolid", "date", "open", "high", "low", "close", "volume", "atr"],
+                columns=["symbolid", "date", "open", "high", "low", "close", "volume"],
             )
             await conn.execute(
                 """
-                INSERT INTO daily (symbolid, date, open, high, low, close, volume, atr)
-                SELECT symbolid, date, open, high, low, close, volume, atr FROM _stage_daily
+                INSERT INTO daily (symbolid, date, open, high, low, close, volume)
+                SELECT symbolid, date, open, high, low, close, volume FROM _stage_daily
                 ON CONFLICT (symbolid, date) DO UPDATE SET
-                    atr = EXCLUDED.atr;
+                    open   = EXCLUDED.open,
+                    high   = EXCLUDED.high,
+                    low    = EXCLUDED.low,
+                    close  = EXCLUDED.close,
+                    volume = EXCLUDED.volume;
+                """
+            )
+
+
+# ---------------------------------------------------------------------------
+# daily_indicators (calculated; historian rewrites after raw daily inserts)
+# ---------------------------------------------------------------------------
+
+
+async def bulk_insert_daily_indicators(
+    pool: asyncpg.Pool,
+    rows: Sequence[tuple[int, "date", float]],
+) -> None:
+    """
+    Upsert calculated per-day indicators (currently just ATR14).
+
+    ``rows`` is a sequence of ``(symbolid, date, atr)`` tuples. A fresh
+    ATR14 computation from a wider window can legitimately produce a
+    different value for the same date, so the DO UPDATE branch overwrites
+    the previous value.
+    """
+    if not rows:
+        return
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                CREATE TEMP TABLE _stage_daily_ind (
+                    symbolid  integer,
+                    date      date,
+                    atr       numeric(12,4)
+                ) ON COMMIT DROP;
+                """
+            )
+            await conn.copy_records_to_table(
+                "_stage_daily_ind",
+                records=rows,
+                columns=["symbolid", "date", "atr"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO daily_indicators (symbolid, date, atr, updated)
+                SELECT symbolid, date, atr, now() FROM _stage_daily_ind
+                ON CONFLICT (symbolid, date) DO UPDATE SET
+                    atr     = EXCLUDED.atr,
+                    updated = EXCLUDED.updated;
                 """
             )
 

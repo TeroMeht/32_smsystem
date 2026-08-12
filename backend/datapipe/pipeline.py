@@ -66,27 +66,35 @@ async def startup(sink: BarSink | None = None) -> None:
         await drop_old_partitions(pool, today)
         await empty_livestream_table(pool)
 
-        # Persistent freshness gate: one backfill per side per day.
-        # backfill_status is the source of truth -- if the last successful
-        # run for a side happened today, skip that side's REST + rvol work.
-        last_daily, last_intraday = await get_last_backfill_run(pool)
-        need_daily    = last_daily    is None or last_daily.date()    < today
-        need_intraday = last_intraday is None or last_intraday.date() < today
-
-        if need_daily or need_intraday:
-            await backfill_all_symbols(
-                pool, _rest, today, symbol_map,
-                need_daily=need_daily,
-                need_intraday=need_intraday,
-                replay_mode=(mode == "replay"),
-            )
-            logger.info("Historian backfill complete")
-        else:
-            logger.info(
-                "Backfill already ran today "
-                "(daily @ %s, intraday @ %s)",
-                last_daily, last_intraday,
-            )
+        # TESTING: backfill_status freshness gate is temporarily disabled --
+        # historian runs on every startup regardless of when it last ran.
+        # Restore the block below when done testing.
+        #
+        # last_daily, last_intraday = await get_last_backfill_run(pool)
+        # need_daily    = last_daily    is None or last_daily.date()    < today
+        # need_intraday = last_intraday is None or last_intraday.date() < today
+        #
+        # if need_daily or need_intraday:
+        #     await backfill_all_symbols(
+        #         pool, _rest, today, symbol_map,
+        #         need_daily=need_daily,
+        #         need_intraday=need_intraday,
+        #         replay_mode=(mode == "replay"),
+        #     )
+        #     logger.info("Historian backfill complete")
+        # else:
+        #     logger.info(
+        #         "Backfill already ran today "
+        #         "(daily @ %s, intraday @ %s)",
+        #         last_daily, last_intraday,
+        #     )
+        await backfill_all_symbols(
+            pool, _rest, today, symbol_map,
+            need_daily=True,
+            need_intraday=True,
+            replay_mode=(mode == "replay"),
+        )
+        logger.info("Historian backfill complete (freshness gate disabled)")
 
         if mode == "replay":
             start_utc = (

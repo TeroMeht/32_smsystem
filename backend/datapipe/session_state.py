@@ -35,7 +35,7 @@ class SymbolSessionState:
     session_date: date  # ET session date
     history: list[Bar1m] = field(default_factory=list)
     atr: Optional[float] = None
-    # rvol_baseline for THIS symbol keyed by ET bar_time. Values are
+    # rvol_baseline for THIS symbol keyed by Helsinki bar_time. Values are
     # PER-BAR average volumes -- the live path accumulates them.
     rvol_baseline: dict[time, float] = field(default_factory=dict)
     # Running sum of per-bar baselines consumed so far this session.

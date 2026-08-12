@@ -77,13 +77,19 @@ def session_date_et(ts_utc: datetime) -> date:
     return to_et(ts_utc).date()
 
 
-def et_time_slot(ts_utc: datetime) -> time:
+def helsinki_time_slot(ts_utc: datetime) -> time:
     """
-    The ET time-of-day of the bar's *start*, minutes rounded (seconds
-    zeroed). This is the join key into ``rvol_baseline.bar_time``.
+    The Helsinki time-of-day of the bar's *start*, minutes rounded
+    (seconds zeroed). Join key into ``rvol_baseline.bar_time``.
+
+    Baseline slots are keyed in Helsinki so the DB values match the
+    display everywhere else in the app. Note: US and Finland transition
+    DST on different weekends, so for ~3 weeks a year the ET-equivalent
+    of a given Helsinki HH:MM shifts by an hour. Baseline lookups during
+    those weeks may return the neighbouring slot's average.
     """
-    et_dt = to_et(ts_utc)
-    return time(et_dt.hour, et_dt.minute)
+    hki_dt = to_helsinki(ts_utc)
+    return time(hki_dt.hour, hki_dt.minute)
 
 
 def unix_ms_to_utc(ms: int) -> datetime:

@@ -25,7 +25,7 @@ from backend.database.writers import insert_livestream_bar
 from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.schemas import Bar1m
 from backend.datapipe.session_state import SessionStore, SymbolSessionState
-from backend.datapipe.time_utils import et_time_slot, session_date_et
+from backend.datapipe.time_utils import helsinki_time_slot, session_date_et
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ async def process_bar(
     """
     st = store.get_or_init(bar.symbol, bar.symbolid, session_date_et(bar.ts))
 
-    slot = et_time_slot(bar.ts)
+    slot = helsinki_time_slot(bar.ts)
     slot_avg = st.baseline_for_slot(slot)
 
     enriched = enrich_bar(
@@ -58,17 +58,9 @@ async def process_bar(
         baseline_history_sum=st.baseline_history_sum,
     )
 
-    # Per-bar trace disabled -- too noisy at real symbol counts. Re-add a
-    # ``logger.debug(...)`` here (and flip the module logger to DEBUG) if
-    # you ever need to spot-check calculations again.
-
-    # Persist to livestream only. intraday_bars is the historian's job --
-    # baseline material for RVOL rebuilds and nothing else.
     await insert_livestream_bar(pool, enriched)
 
     st.history.append(enriched)
-    # Advance the running baseline sum so the NEXT bar sees this slot's
-    # per-bar average included in its denominator.
     st.baseline_history_sum += slot_avg
 
     if sink is not None:

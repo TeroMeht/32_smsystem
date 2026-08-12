@@ -29,14 +29,15 @@ import pandas as pd
 from backend.core.config import settings
 from backend.database import rvol_baseline as rvol_baseline_db
 from backend.database.partitions import (
-    DAILY_RETENTION_DAYS,
-    INTRADAY_RETENTION_DAYS,
     ensure_partition_daily,
+    ensure_partition_daily_indicators,
     ensure_partition_intraday,
     ensure_partitions_for_dates,
 )
+from backend.database.readers import load_daily_for_atr_compute
 from backend.database.writers import (
     bulk_insert_daily_bars,
+    bulk_insert_daily_indicators,
     bulk_insert_intraday_bars,
     record_backfill_run,
 )
@@ -60,36 +61,32 @@ async def _backfill_daily_for_symbol(
     up_to: date,
 ) -> list[DailyBar]:
     """
-    Fetch daily bars + compute ATR14 + return DailyBar list ready to insert.
+    Fetch raw daily OHLCV bars from Polygon.
 
     Always fetches the full DAILY_BACKFILL_DAYS window (with a 2x calendar
-    buffer for weekends/holidays) because ATR14 needs 14 trading days of
-    context -- a purely incremental "just fetch yesterday" would leave us
-    unable to compute the new row's ATR.
+    buffer for weekends/holidays) because the later ATR14 compute pass
+    needs 14 trading days of context per symbol.
+
+    Returned DailyBars are RAW ONLY -- no ATR / derived fields. Those
+    live in ``daily_indicators`` and are populated by ``_compute_daily_indicators``
+    after the raw daily inserts finish.
     """
     start = up_to - timedelta(days=settings.DAILY_BACKFILL_DAYS * 2)
     raw = await rest.fetch_daily_bars_range(symbol, start_day=start, end_day=up_to)
     if not raw:
         return []
-    df = pd.DataFrame([
-        {"Open": b.o, "High": b.h, "Low": b.l, "Close": b.c, "Volume": int(b.v), "t": b.t}
-        for b in raw
-    ])
-    df["date"] = pd.to_datetime(df["t"], unit="ms", utc=True).dt.date
-    df["atr"] = compute_atr_series(df)
     return [
         DailyBar(
-            symbol=symbol,
-            symbolid=symbolid,
-            d=row["date"],
-            open=float(row["Open"]),
-            high=float(row["High"]),
-            low=float(row["Low"]),
-            close=float(row["Close"]),
-            volume=int(row["Volume"]),
-            atr=float(row["atr"]),
+            symbol   = symbol,
+            symbolid = symbolid,
+            d        = datetime.fromtimestamp(b.t / 1000, tz=timezone.utc).date(),
+            open     = float(b.o),
+            high     = float(b.h),
+            low      = float(b.l),
+            close    = float(b.c),
+            volume   = int(b.v),
         )
-        for _, row in df.iterrows()
+        for b in raw
     ]
 
 
@@ -152,12 +149,24 @@ async def backfill_all_symbols(
 
     # 1. Ensure partitions exist for the retention window forward.
     intraday_start = today - timedelta(days=settings.INTRADAY_BACKFILL_DAYS)
-    intraday_days = [today - timedelta(days=i) for i in range(INTRADAY_RETENTION_DAYS)]
-    daily_days = [today - timedelta(days=i) for i in range(DAILY_RETENTION_DAYS)]
+    intraday_days = [today - timedelta(days=i) for i in range(settings.INTRADAY_BACKFILL_DAYS)]
+    daily_days    = [today - timedelta(days=i) for i in range(settings.DAILY_BACKFILL_DAYS)]
     await ensure_partitions_for_dates(pool, intraday_days, daily_days)
 
     # 2. Build todo lists per the caller's need_* flags.
-    fetch_end = today if replay_mode else today - timedelta(days=1)
+    #
+    # intraday_end: replay driver reads REPLAY_DAY's intraday from disk, so
+    #   in replay mode we must fetch through ``today`` (= REPLAY_DAY). In
+    #   live mode historian stops at yesterday and livestream primes today
+    #   via a separate REST pass.
+    # daily_end:  daily fetch ALWAYS stops at the previous trading day, in
+    #   both modes. Rationale: RelATR should use YESTERDAY's ATR against
+    #   today's bars. If historian fetched today's own daily row (available
+    #   in replay, available post-close in live), that value would fold
+    #   into ATR14 and leak look-ahead into RelATR for the same day.
+    intraday_end = today if replay_mode else today - timedelta(days=1)
+    daily_end    = previous_trading_day(today)
+
     daily_todo:    list[tuple[str, int]]       = []
     intraday_todo: list[tuple[str, int, date]] = []
     if need_daily:
@@ -168,10 +177,23 @@ async def backfill_all_symbols(
             intraday_todo.append((symbol, symbolid, intraday_start))
 
     daily_rows, intraday_rows = await _run_backfill_workers(
-        pool, rest, today, fetch_end, daily_todo, intraday_todo, concurrency,
+        pool, rest, today, daily_end, intraday_end,
+        daily_todo, intraday_todo, concurrency,
     )
 
-    # 3. RVOL baseline rebuild -- only if intraday brought new data in.
+    # 3a. Daily indicators pass -- read raw daily back, compute ATR14 per
+    #     symbol in pandas, upsert into daily_indicators. Only runs when
+    #     the daily side actually landed new rows this run.
+    if need_daily and daily_rows > 0:
+        logger.info("New daily data (%d rows) -- computing daily_indicators", daily_rows)
+        await _compute_daily_indicators(pool, today)
+    else:
+        logger.info(
+            "Skipping daily_indicators compute (need_daily=%s daily_rows=%d)",
+            need_daily, daily_rows,
+        )
+
+    # 3b. RVOL baseline rebuild -- only if intraday brought new data in.
     if need_intraday and intraday_rows > 0:
         logger.info("New intraday data (%d rows) -- rebuilding rvol_baseline", intraday_rows)
         await rvol_baseline_db.rebuild(
@@ -201,7 +223,8 @@ async def _run_backfill_workers(
     pool: asyncpg.Pool,
     rest: RestClient,
     today: date,
-    fetch_end: date,
+    daily_end: date,
+    intraday_end: date,
     daily_todo: list[tuple[str, int]],
     intraday_todo: list[tuple[str, int, date]],
     concurrency: int,
@@ -211,14 +234,18 @@ async def _run_backfill_workers(
     independent; we schedule both as one flat coroutine set so the
     concurrency limit applies to the total in-flight REST calls.
 
+    ``daily_end`` and ``intraday_end`` are the inclusive upper bounds of
+    the REST fetches for each side (see caller for the ``today - 1`` /
+    ``previous_trading_day(today)`` rationale).
+
     Returns ``(daily_rows_added, intraday_rows_added)`` so the caller can
     ledger the run and decide whether an rvol_baseline rebuild is needed.
     """
     if not daily_todo and not intraday_todo:
         return 0, 0
 
-    daily_cutoff = today - timedelta(days=DAILY_RETENTION_DAYS - 1)
-    intraday_cutoff = today - timedelta(days=INTRADAY_RETENTION_DAYS - 1)
+    daily_cutoff    = today - timedelta(days=settings.DAILY_BACKFILL_DAYS    - 1)
+    intraday_cutoff = today - timedelta(days=settings.INTRADAY_BACKFILL_DAYS - 1)
 
     sem = asyncio.Semaphore(concurrency)
     counters = {"daily_rows": 0, "intraday_rows": 0,
@@ -256,7 +283,7 @@ async def _run_backfill_workers(
     async def _do_daily(symbol: str, symbolid: int) -> None:
         async with sem:
             try:
-                daily_all = await _backfill_daily_for_symbol(rest, symbol, symbolid, today)
+                daily_all = await _backfill_daily_for_symbol(rest, symbol, symbolid, daily_end)
                 daily = [b for b in daily_all if b.d >= daily_cutoff]
                 if daily:
                     for d in {b.d for b in daily}:
@@ -273,7 +300,7 @@ async def _run_backfill_workers(
         async with sem:
             try:
                 intraday_all = await _backfill_intraday_for_symbol(
-                    rest, symbol, symbolid, need_from, fetch_end,
+                    rest, symbol, symbolid, need_from, intraday_end,
                 )
                 intraday = [
                     b for b in intraday_all
@@ -302,3 +329,55 @@ async def _run_backfill_workers(
         counters["intraday_rows"], counters["intraday_errors"],
     )
     return counters["daily_rows"], counters["intraday_rows"]
+
+
+# ---------------------------------------------------------------------------
+# daily_indicators compute phase  (raw daily -> ATR14 -> daily_indicators)
+# ---------------------------------------------------------------------------
+
+
+async def _compute_daily_indicators(pool: asyncpg.Pool, today: date) -> None:
+    """
+    Rebuild ``daily_indicators`` from whatever's currently in ``daily``.
+
+    Reads every raw daily row in the retention window (one batched
+    query), groups by symbol in pandas, runs ``compute_atr_series`` per
+    group, and bulk-upserts ``(symbolid, date, atr)`` into daily_indicators.
+
+    Runs AFTER the raw daily inserts completed so the compute sees the
+    freshest data. Partitions for the target dates are ensured up front
+    -- retention drop already ran earlier in startup, so we only need
+    the write-side partitions.
+    """
+    since = today - timedelta(days=settings.DAILY_BACKFILL_DAYS - 1)
+    rows = await load_daily_for_atr_compute(pool, since)
+    if not rows:
+        logger.info("daily_indicators: no raw daily rows in window -- nothing to compute")
+        return
+
+    df = pd.DataFrame(rows)  # cols: symbolid, date, high, low, close
+    # compute_atr_series expects Title-Case columns.
+    df = df.rename(columns={"high": "High", "low": "Low", "close": "Close"})
+    df.sort_values(["symbolid", "date"], inplace=True)
+
+    out: list[tuple[int, date, float]] = []
+    for sid, grp in df.groupby("symbolid", sort=False):
+        atr = compute_atr_series(grp)  # period from settings.ATR_SAMPLE_SESSIONS
+        for (_, r), val in zip(grp.iterrows(), atr):
+            if pd.isna(val):
+                continue
+            out.append((int(sid), r["date"], float(val)))
+
+    if not out:
+        logger.info("daily_indicators: no ATR values produced -- nothing to write")
+        return
+
+    # Ensure a daily_indicators partition exists for every target date.
+    for d in {row[1] for row in out}:
+        await ensure_partition_daily_indicators(pool, d)
+
+    await bulk_insert_daily_indicators(pool, out)
+    logger.info(
+        "daily_indicators: wrote %d rows across %d symbols",
+        len(out), df["symbolid"].nunique(),
+    )

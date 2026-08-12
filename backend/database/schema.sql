@@ -58,6 +58,8 @@ CREATE TABLE intraday_bars_20260807 PARTITION OF intraday_bars
 
 
 -- 4. daily (partitioned by day, 14-day retention)
+-- Raw-only: exactly what Polygon returned. Calculated fields (ATR, etc.)
+-- live in daily_indicators so the incoming/calculated boundary is explicit.
 CREATE TABLE daily (
     symbolid  integer       NOT NULL REFERENCES monitored_symbols(symbolid),
     date      date          NOT NULL,
@@ -66,7 +68,6 @@ CREATE TABLE daily (
     low       numeric(12,4),
     close     numeric(12,4),
     volume    bigint,
-    atr       numeric(12,4),
     PRIMARY KEY (symbolid, date)
 ) PARTITION BY RANGE (date);
 
@@ -75,8 +76,27 @@ CREATE TABLE daily_20260807 PARTITION OF daily
     FOR VALUES FROM ('2026-08-07') TO ('2026-08-08');
 
 
+-- 4b. daily_indicators (calculated fields keyed to the daily grid)
+-- Same partitioning + retention as ``daily``; historian computes ATR14 in
+-- a separate pass (read daily -> pandas -> insert daily_indicators) so
+-- ``daily`` stays raw-only.
+CREATE TABLE daily_indicators (
+    symbolid  integer      NOT NULL REFERENCES monitored_symbols(symbolid),
+    date      date         NOT NULL,
+    atr       numeric(12,4),
+    updated   timestamptz  NOT NULL DEFAULT now(),
+    PRIMARY KEY (symbolid, date)
+) PARTITION BY RANGE (date);
+
+-- First partition (adjust date to whatever session you start with)
+CREATE TABLE daily_indicators_20260807 PARTITION OF daily_indicators
+    FOR VALUES FROM ('2026-08-07') TO ('2026-08-08');
+
+
 -- 5. rvol_baseline (per-bar average volume per ticker × 1-min time-of-day slot)
--- bar_time is in ET (America/New_York) since the session grid is ET-based.
+-- bar_time is in Helsinki (matches the display used everywhere else).
+-- session_date bucketing (in the rebuild SQL) stays in ET because US
+-- sessions are inherently defined on the ET calendar.
 -- avg_volume is the average of that minute's RAW (per-bar) volume across the
 -- N most-recent trading sessions in the rebuild window -- NOT cumulative.
 -- The live path builds the cumulative denominator on the fly by summing
@@ -84,11 +104,16 @@ CREATE TABLE daily_20260807 PARTITION OF daily
 -- way a missing slot contributes 0 but the running sum never drops back
 -- to zero, so RVOL stays defined for the rest of the session.
 CREATE TABLE rvol_baseline (
-    symbolid     integer  NOT NULL REFERENCES monitored_symbols(symbolid),
-    bar_time     time     NOT NULL,
+    symbolid     integer       NOT NULL REFERENCES monitored_symbols(symbolid),
+    -- ``timetz`` stamps the Helsinki UTC offset alongside the time so it's
+    -- unambiguous at a glance (04:00:00+03, 09:30:00+03, ...). Rebuild
+    -- runs daily -- the offset always reflects "now" (+03 in EEST, +02
+    -- in EET), so values self-heal across DST boundaries. Python side
+    -- treats the value as a naive time (tz stripped on read).
+    bar_time     timetz        NOT NULL,
     avg_volume   numeric(16,2) NOT NULL,
-    sample_days  smallint NOT NULL,
-    updated      timestamptz NOT NULL DEFAULT now(),
+    sample_days  smallint      NOT NULL,
+    updated      timestamptz   NOT NULL DEFAULT now(),
     PRIMARY KEY (symbolid, bar_time)
 );
 
@@ -124,6 +149,10 @@ CREATE INDEX idx_backfill_status_intraday_last_run
 CREATE INDEX IF NOT EXISTS idx_livestream_symbolid_ts_desc
     ON livestream (symbolid, ts DESC);
 
--- daily lookups by symbol newest-first (last close, latest ATR)
+-- daily lookups by symbol newest-first (last close)
 CREATE INDEX IF NOT EXISTS idx_daily_symbolid_date_desc
     ON daily (symbolid, date DESC);
+
+-- daily_indicators lookups by symbol newest-first (latest ATR feeds RelATR)
+CREATE INDEX IF NOT EXISTS idx_daily_indicators_symbolid_date_desc
+    ON daily_indicators (symbolid, date DESC);

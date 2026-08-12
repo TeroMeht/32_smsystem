@@ -37,7 +37,7 @@ from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.rest_client import RestClient
 from backend.datapipe.schemas import AggregateMinuteMessage, Bar1m, MonitoredSymbols
 from backend.datapipe.session_state import SessionStore
-from backend.datapipe.time_utils import et_time_slot, session_date_et, to_helsinki
+from backend.datapipe.time_utils import helsinki_time_slot, session_date_et, to_helsinki
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ async def _initialize_livestream(
             continue
         st = store.get_or_init(sym, sid, today_et)
         for bar in bars:
-            slot = et_time_slot(bar.ts)
+            slot = helsinki_time_slot(bar.ts)
             slot_avg = st.baseline_for_slot(slot)
             enriched = enrich_bar(
                 new_bar=bar,

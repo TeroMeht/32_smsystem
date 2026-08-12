@@ -25,6 +25,7 @@ from typing import Iterable, Optional
 import numpy as np
 import pandas as pd
 
+from backend.core.config import settings
 from backend.datapipe.schemas import Bar1m
 
 
@@ -128,11 +129,14 @@ def next_ema(new_bar: Bar1m, history: list[Bar1m], period: int = 9) -> float:
 # ---------------------------------------------------------------------------
 
 
-def compute_atr_series(daily_df: pd.DataFrame, period: int = 14) -> pd.Series:
+def compute_atr_series(daily_df: pd.DataFrame) -> pd.Series:
     """
-    14-day ATR on the daily frame. Matches 22's ``calculate_14day_atr_df``:
-    first-row true range collapses to (High - Low) because there's no
-    previous close yet.
+    ATR on the daily frame using an EWM smoother. Matches 22's
+    ``calculate_14day_atr_df``: first-row true range collapses to
+    (High - Low) because there's no previous close yet.
+
+    EWM span comes from ``settings.ATR_SAMPLE_SESSIONS`` -- single source
+    of truth in env, no per-call override.
     """
     df = daily_df.copy()
     prev_close = df["Close"].shift(1)
@@ -140,15 +144,15 @@ def compute_atr_series(daily_df: pd.DataFrame, period: int = 14) -> pd.Series:
     h_pc = (df["High"] - prev_close.fillna(df["High"])).abs()
     l_pc = (df["Low"] - prev_close.fillna(df["Low"])).abs()
     tr = np.maximum.reduce([hl.values, h_pc.values, l_pc.values])
-    atr = pd.Series(tr).ewm(span=period, adjust=False).mean().round(4)
+    atr = pd.Series(tr).ewm(span=settings.ATR_SAMPLE_SESSIONS, adjust=False).mean().round(4)
     return atr
 
 
-def latest_atr(daily_df: pd.DataFrame, period: int = 14) -> Optional[float]:
+def latest_atr(daily_df: pd.DataFrame) -> Optional[float]:
     """Convenience: latest ATR value from a symbol's daily frame."""
     if daily_df.empty:
         return None
-    return float(compute_atr_series(daily_df, period).iloc[-1])
+    return float(compute_atr_series(daily_df).iloc[-1])
 
 
 # ---------------------------------------------------------------------------

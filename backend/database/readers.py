@@ -36,22 +36,58 @@ async def load_active_symbol_map(pool: asyncpg.Pool) -> MonitoredSymbols:
 
 async def load_latest_atr_map(pool: asyncpg.Pool) -> dict[int, float]:
     """
-    symbolid -> latest ATR from ``daily`` (DISTINCT ON per symbol).
+    symbolid -> latest ATR from ``daily_indicators`` (DISTINCT ON per symbol).
 
-    Uses idx_daily_symbolid_date_desc for the ORDER BY. If a symbol has
-    no daily rows yet, it simply won't appear in the returned dict --
-    RelATR for that symbol will be None until the historian backfills.
+    Uses idx_daily_indicators_symbolid_date_desc for the ORDER BY. If a
+    symbol has no ATR row yet (historian hasn't run the indicator pass
+    for it), it simply won't appear in the returned dict -- RelATR for
+    that symbol stays None until the next backfill.
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT DISTINCT ON (symbolid) symbolid, atr
-              FROM daily
+              FROM daily_indicators
              WHERE atr IS NOT NULL
              ORDER BY symbolid, date DESC;
             """
         )
     return {r["symbolid"]: float(r["atr"]) for r in rows}
+
+
+async def load_daily_for_atr_compute(
+    pool: asyncpg.Pool,
+    since: date,
+) -> list[dict]:
+    """
+    Every raw daily row on or after ``since``, ordered ready for pandas.
+
+    Returned dicts have keys ``symbolid, date, high, low, close``. The
+    historian groups these by symbolid, feeds each group into
+    ``compute_atr_series`` (High/Low/Close), and upserts the resulting
+    ATR into ``daily_indicators``. Retention already caps how much
+    history the caller reads.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT symbolid, date, high, low, close
+              FROM daily
+             WHERE date >= $1
+             ORDER BY symbolid, date;
+            """,
+            since,
+        )
+    return [
+        {
+            "symbolid": r["symbolid"],
+            "date":     r["date"],
+            "high":     float(r["high"])  if r["high"]  is not None else None,
+            "low":      float(r["low"])   if r["low"]   is not None else None,
+            "close":    float(r["close"]) if r["close"] is not None else None,
+        }
+        for r in rows
+    ]
 
 
 async def load_session_bars(
@@ -206,17 +242,23 @@ async def load_rvol_baseline_for_symbol(
     symbolid: int,
 ) -> dict[time, float]:
     """
-    bar_time -> per-bar avg_volume for one symbol's full session grid.
+    bar_time -> per-bar avg_volume for one symbol's full 24-hour grid
+    (720 rows at the 2-min cadence).
 
-    Loaded once per symbol at startup and cached in memory; a full session
-    grid is <= ~960 rows (04:00-20:00 ET at 1-min) so it costs nothing.
+    DB stores ``bar_time`` as ``timetz`` (Helsinki offset) so the value
+    is unambiguous when viewed directly. In Python we key by naive
+    ``time`` because that's what ``helsinki_time_slot(bar.ts)`` returns
+    on the live path -- strip the tz here so lookup keys match.
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT bar_time, avg_volume FROM rvol_baseline WHERE symbolid = $1;",
             symbolid,
         )
-    return {r["bar_time"]: float(r["avg_volume"]) for r in rows}
+    return {
+        time(r["bar_time"].hour, r["bar_time"].minute): float(r["avg_volume"])
+        for r in rows
+    }
 
 
 async def last_intraday_ts(

@@ -156,8 +156,12 @@ class RestAggregateResponse(BaseModel):
 
 class DailyBar(BaseModel):
     """
-    One daily OHLCV row for the ``daily`` table. ATR is filled by the
-    calculations layer, not the adapter.
+    One raw daily OHLCV row for the ``daily`` table.
+
+    ATR (and any other derived indicator) is NOT part of this shape --
+    the historian computes those in a separate pass and persists them
+    to ``daily_indicators``. Keeping DailyBar raw preserves the
+    "incoming vs calculated" boundary end-to-end.
     """
 
     symbol: str
@@ -168,7 +172,6 @@ class DailyBar(BaseModel):
     low: float
     close: float
     volume: int
-    atr: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
