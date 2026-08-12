@@ -42,7 +42,7 @@ from backend.database.writers import (
     record_backfill_run,
 )
 from backend.datapipe.calculations import compute_atr_series
-from backend.datapipe.rest_client import RestClient
+from backend.datapipe.sources.rest_client import RestClient
 from backend.datapipe.schemas import Bar1m, DailyBar, MonitoredSymbols
 from backend.datapipe.time_utils import previous_trading_day, session_date_et
 

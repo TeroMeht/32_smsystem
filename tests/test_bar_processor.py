@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from backend.datapipe.bar_processor import process_bar
+from backend.datapipe.runtime.bar_processor import process_bar
 from backend.datapipe.schemas import Bar1m
-from backend.datapipe.session_state import SessionStore
+from backend.datapipe.runtime.session_state import SessionStore
 
 
 class _StubConn:

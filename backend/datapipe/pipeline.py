@@ -27,11 +27,11 @@ from backend.database.partitions import drop_old_partitions
 from backend.database.pool import close_pool, init_pool
 from backend.database.readers import get_last_backfill_run, load_active_symbol_map
 from backend.database.writers import empty_livestream_table
-from backend.datapipe.bar_processor import BarSink
+from backend.datapipe.runtime.bar_processor import BarSink
 from backend.datapipe.historian import backfill_all_symbols
-from backend.datapipe.livestream import run_livestream
-from backend.datapipe.replay import ReplayConfig, run_replay
-from backend.datapipe.rest_client import RestClient
+from backend.datapipe.runtime.livestream import run_livestream
+from backend.datapipe.runtime.replay import ReplayConfig, run_replay
+from backend.datapipe.sources.rest_client import RestClient
 from backend.datapipe.time_utils import effective_today, helsinki_hhmm_to_utc
 
 logger = logging.getLogger(__name__)

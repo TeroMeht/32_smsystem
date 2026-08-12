@@ -2,11 +2,11 @@
 In-memory per-symbol session state used by both livestream and replay.
 
 Both paths need the same lightweight running state to enrich each incoming
-1-min bar cheaply:
+bar cheaply:
 
   * ``history``              -- list of prior bars this session (in order)
   * ``atr``                  -- latest daily ATR (feeds RelATR)
-  * ``rvol_baseline``        -- dict[ET bar_time -> per-bar avg volume]
+  * ``rvol_baseline``        -- dict[Helsinki bar_time -> per-bar avg volume]
   * ``baseline_history_sum`` -- running sum of per-bar baselines consumed
                                 by prior bars this session. Together with
                                 the current slot's baseline, this forms

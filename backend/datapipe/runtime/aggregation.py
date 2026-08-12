@@ -1,23 +1,24 @@
 """
-N-minute bar aggregation for the live WS path.
+Per-symbol N-minute streaming aggregator for the live WS path.
 
 Polygon's REST endpoint supports ``/range/N/minute/...`` server-side, so
 the historian and livestream REST-prime paths request N-min bars directly
 and don't need any client-side aggregation. This module only exists for
-the Live WS consumer -- Polygon's AM socket only emits 1-min bars, so we
+the live WS consumer -- Polygon's AM socket only emits 1-min bars, so we
 buffer them per symbol and emit one N-min aggregate every N-th minute.
 
 Window alignment: buckets are aligned to the wall-clock N-min grid in
-UTC (equivalent to ET at the minute level -- both share minute-of-hour).
-For N=2: 09:30-09:32, 09:32-09:34, ..., 15:58-16:00. Aggregate ``ts`` is
-the window START (even minute).
+UTC (equivalent to Helsinki at the minute level -- both share the
+minute-of-hour). For N=2: 09:30-09:32, 09:32-09:34, .... Aggregate ``ts``
+is the window START (even minute).
 
 A partial trailing window (single 1-min bar with no partner) is buffered
 but never emitted alone -- if the session ends on an odd minute, that
 last minute is dropped.
 
-``BAR_MINUTES`` is the single source of truth for the aggregation cadence.
-The REST client imports it to build the ``/range/N/minute/...`` URL.
+Cadence is set by ``BAR_MINUTES`` in ``datapipe.schemas`` -- the same
+constant used by ``sources.rest_client`` to build the REST URL, so the
+whole system agrees on the window size.
 """
 
 from __future__ import annotations
@@ -25,11 +26,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from backend.datapipe.schemas import Bar1m
+from backend.datapipe.schemas import BAR_MINUTES, Bar1m
 
 
-# Fixed for now. Promote to settings if we ever need to vary it.
-BAR_MINUTES = 2
 _BUCKET_SECONDS = BAR_MINUTES * 60
 
 

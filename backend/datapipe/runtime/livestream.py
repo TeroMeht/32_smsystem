@@ -31,12 +31,12 @@ from backend.database.readers import (
     load_rvol_baseline_for_symbol,
 )
 from backend.database.writers import bulk_insert_livestream_bars
-from backend.datapipe.aggregation import BarAggregator
-from backend.datapipe.bar_processor import BarSink, process_bar
 from backend.datapipe.calculations import enrich_bar
-from backend.datapipe.rest_client import RestClient
+from backend.datapipe.runtime.aggregation import BarAggregator
+from backend.datapipe.runtime.bar_processor import BarSink, process_bar
 from backend.datapipe.schemas import AggregateMinuteMessage, Bar1m, MonitoredSymbols
-from backend.datapipe.session_state import SessionStore
+from backend.datapipe.runtime.session_state import SessionStore
+from backend.datapipe.sources.rest_client import RestClient
 from backend.datapipe.time_utils import helsinki_time_slot, session_date_et, to_helsinki
 
 logger = logging.getLogger(__name__)
@@ -59,10 +59,11 @@ async def _initialize_livestream(
     filled by a fresh REST snapshot. Livestream is truncated first (by
     pipeline) so we're writing into a clean table.
 
-    For each symbol we fetch today's 1-min bars via REST, walk them
-    through ``enrich_bar`` in ts order, and bulk-insert the enriched
-    result. In-memory session state is populated in the same pass so the
-    WS consumer picks up from a correct accumulator.
+    For each symbol we fetch today's bars via REST (already at
+    BAR_MINUTES cadence), walk them through ``enrich_bar`` in ts order,
+    and bulk-insert the enriched result. In-memory session state is
+    populated in the same pass so the WS consumer picks up from a correct
+    accumulator.
 
     intraday_bars is NOT touched -- historian owns that table.
     """
@@ -89,6 +90,9 @@ async def _initialize_livestream(
     async def _fetch(sym: str, sid: int) -> tuple[str, int, list[Bar1m]]:
         async with sem:
             raw = await rest.fetch_intraday_bars(sym, today_et)
+            # Polygon returns bars at the aggregation cadence directly
+            # (see rest_client.fetch_intraday_bars), so no client-side
+            # aggregation is needed on this priming path.
             return sym, sid, [b.to_bar1m(symbol=sym, symbolid=sid) for b in raw]
 
     fetch_results = await asyncio.gather(*[

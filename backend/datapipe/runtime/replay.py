@@ -9,19 +9,18 @@ a live session for the chosen day.
 
 Flow (all DB, no REST):
 
-  1. Load the active monitored-symbol set.
-  2. Rebuild ``rvol_baseline`` from the days STRICTLY BEFORE the replay
-     day. The baseline can't include the replay day itself -- that would
-     leak future information into RVOL.
-  3. Initialize per-symbol state (ATR + rvol baseline). livestream table
-     itself is emptied by pipeline.startup before we spawn.
-  4. Load the chosen day's 1-min bars in one batched query, ordered by
+  1. Load the active monitored-symbol set (from pipeline.startup).
+  2. Initialize per-symbol state (ATR + rvol baseline) from DB.
+  3. Load the chosen day's bars in one batched query, ordered by
      timestamp -- so multi-symbol replays stay cross-symbol time-aligned
      without any Python-side merging.
-  5. For each bar, sleep ``(next.ts - current.ts) / speed`` seconds and
-     dispatch through ``process_bar``. ``speed = 0`` means "as fast as
-     possible"; ``speed = 60`` compresses one minute of trading into one
-     wall-clock second.
+  4. If REPLAY_START_TIME is set, split at that instant: bars before
+     prime livestream + state (mirrors live's REST prime), bars at/after
+     are streamed through the consumer.
+  5. For each streamed bar, sleep ``(next.ts - current.ts) / speed``
+     seconds and dispatch through ``process_bar``. ``speed = 0`` means
+     "as fast as possible"; ``speed = 60`` compresses one minute of
+     trading into one wall-clock second.
 
 Because the pipeline only reads from the DB, replay works offline (nights,
 weekends) as long as the historian has previously loaded that day's bars.
@@ -43,11 +42,11 @@ from backend.database.readers import (
     load_rvol_baseline_for_symbol,
 )
 from backend.database.writers import bulk_insert_livestream_bars
-from backend.datapipe.bar_processor import BarSink, process_bar
 from backend.datapipe.calculations import enrich_bar
-from backend.datapipe.rest_client import RestClient  # kept for pipeline signature compat
+from backend.datapipe.runtime.bar_processor import BarSink, process_bar
 from backend.datapipe.schemas import Bar1m, MonitoredSymbols
-from backend.datapipe.session_state import SessionStore
+from backend.datapipe.runtime.session_state import SessionStore
+from backend.datapipe.sources.rest_client import RestClient  # kept for pipeline signature compat
 from backend.datapipe.time_utils import helsinki_time_slot, to_helsinki
 
 logger = logging.getLogger(__name__)

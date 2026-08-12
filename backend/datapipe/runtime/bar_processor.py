@@ -5,11 +5,11 @@ identical between them.
 
 Steps:
   1. Look up or create the per-symbol SymbolSessionState.
-  2. Compute the ET bar_time slot; grab that slot's rvol baseline
-     (already cumulative-through-this-slot from the rvol_baseline table).
+  2. Compute the Helsinki bar_time slot; grab that slot's rvol baseline
+     (per-bar average from the rvol_baseline table).
   3. Enrich the bar with VWAP/EMA9/RelATR/RVOL cumulative.
   4. Append the enriched bar to session history.
-  5. Persist to livestream + intraday_bars (concurrent).
+  5. Persist to livestream.
   6. Emit the enriched bar via an optional callback -- this is the hook the
      service layer plugs into to run strategies + push SSE events.
 """
@@ -24,7 +24,7 @@ import asyncpg
 from backend.database.writers import insert_livestream_bar
 from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.schemas import Bar1m
-from backend.datapipe.session_state import SessionStore, SymbolSessionState
+from backend.datapipe.runtime.session_state import SessionStore, SymbolSessionState
 from backend.datapipe.time_utils import helsinki_time_slot, session_date_et
 
 logger = logging.getLogger(__name__)

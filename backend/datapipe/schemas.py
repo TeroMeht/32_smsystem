@@ -29,6 +29,17 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
+# System-wide bar cadence
+# ---------------------------------------------------------------------------
+# Single source of truth for the aggregation window (minutes). Read by:
+#   * sources.rest_client -- builds Polygon URL ``/range/N/minute/...``
+#   * runtime.aggregation -- WS-side 1-min -> N-min bucketing
+#   * rvol_baseline SQL   -- generates the 24h Helsinki slot grid
+# Fixed at 2 for now; promote to settings if it ever needs to vary.
+BAR_MINUTES = 2
+
+
+# ---------------------------------------------------------------------------
 # Canonical bar -- the ONLY bar shape used past the adapter boundary
 # ---------------------------------------------------------------------------
 

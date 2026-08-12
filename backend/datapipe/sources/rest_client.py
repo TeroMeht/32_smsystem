@@ -30,8 +30,7 @@ from typing import Optional
 import aiohttp
 
 from backend.core.config import settings
-from backend.datapipe.aggregation import BAR_MINUTES
-from backend.datapipe.schemas import RestAggregateBar, RestAggregateResponse
+from backend.datapipe.schemas import BAR_MINUTES, RestAggregateBar, RestAggregateResponse
 from backend.datapipe.time_utils import date_to_iso
 
 logger = logging.getLogger(__name__)
@@ -110,16 +109,11 @@ class RestClient:
                     )
                     resp.raise_for_status()
                 else:
-                    # Always INFO on 429 even though raise_for_status caught it
-                    # would be nice, but 200s should be quieter. Rate-limit
-                    # headers at INFO when the provider signals we're close.
                     logger.debug(
                         "[rest] <-- %d %s (%.2fs, %d bytes) headers=%s",
                         resp.status, target, elapsed, len(body_bytes), rl_hdrs,
                     )
                     if rl_hdrs:
-                        # Surface rate-limit metadata at INFO once per request
-                        # so throttling is visible even without DEBUG.
                         logger.info("[rest] rate-limit headers on %s: %s", target, rl_hdrs)
 
                 data = json.loads(body_bytes)
@@ -128,8 +122,6 @@ class RestClient:
             out.extend(parsed.results)
             pages += 1
             if pages > 20:
-                # Defensive: no legitimate query for our windows needs >20 pages.
-                # This catches a pathological next_url loop.
                 logger.error("[rest] pagination cutoff at page 20 for %s -- aborting", url)
                 break
             if not parsed.next_url:
