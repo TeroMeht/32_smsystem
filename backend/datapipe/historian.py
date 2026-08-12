@@ -100,6 +100,11 @@ async def _backfill_intraday_for_symbol(
     start_day: date,
     end_day: date,
 ) -> list[Bar1m]:
+    """
+    Fetch aggregation-cadence bars (BAR_MINUTES/minute) directly from
+    Polygon. Polygon does the aggregation server-side, so no client
+    batching is needed here.
+    """
     raw = await rest.fetch_intraday_bars_range(symbol, start_day, end_day)
     return [b.to_bar1m(symbol=symbol, symbolid=symbolid) for b in raw]
 

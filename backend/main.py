@@ -19,6 +19,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 
 from backend.common.logging_config import setup_app_logging
 from backend.core.config import settings
@@ -60,10 +61,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="32_smsystem", lifespan=lifespan)
 
+
+class NoCacheStaticFiles(StaticFiles):
+    """
+    StaticFiles that sends ``Cache-Control: no-store`` on every response.
+
+    We iterate on the UI files (relatr.html, chart.js) constantly; without
+    this the browser silently serves the cached copy on reload, which
+    makes CSS/JS tweaks look like they "didn't apply". Cost is negligible
+    -- the files are small and only fetched by the dashboard tab.
+    """
+
+    async def get_response(self, path, scope):
+        resp: Response = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+
 # Serve everything under frontend/ at /ui/ so relatr.html can reference
 # sibling modules with an absolute path (e.g. /ui/chart.js) that survives
 # whatever URL the page itself is served from.
-app.mount("/ui", StaticFiles(directory=FRONTEND_DIR), name="frontend")
+app.mount("/ui", NoCacheStaticFiles(directory=FRONTEND_DIR), name="frontend")
 
 
 @app.get("/health")
@@ -115,4 +133,7 @@ async def relatr_page():
     path = FRONTEND_DIR / "relatr.html"
     if not path.exists():
         raise HTTPException(status_code=500, detail=f"UI file missing: {path}")
-    return FileResponse(path, media_type="text/html")
+    return FileResponse(
+        path, media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )

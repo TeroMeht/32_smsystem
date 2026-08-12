@@ -3,14 +3,18 @@ Thin async client for the Massive/Polygon REST aggregates endpoint.
 
 Only the endpoints the datapipe needs are wrapped:
 
-  * ``fetch_intraday_bars(symbol, day)``   -> 1-min bars for a single ET
-                                              trading date, all sessions
-                                              (pre/regular/after).
-  * ``fetch_daily_bars_range(symbol, start_day, end_day)`` -> daily history
-                                              in an inclusive date window
-                                              (for ATR14 warmup / incremental
-                                              catch-up in the historian).
+  * ``fetch_intraday_bars(symbol, day)``    -> aggregation-cadence bars
+                                               (BAR_MINUTES/minute) for a
+                                               single ET session date.
+  * ``fetch_intraday_bars_range(symbol,     -> same, over an inclusive
+     start_day, end_day)``                     multi-day window.
+  * ``fetch_daily_bars_range(symbol,        -> daily history for ATR14
+     start_day, end_day)``                     warmup / incremental catch-up
+                                               in the historian.
 
+Intraday cadence is delegated to Polygon (we request ``/range/N/minute/...``
+directly with N = BAR_MINUTES), so callers get already-aggregated bars and
+no client-side aggregation is required on the historian or REST-prime paths.
 next_url pagination is handled here so callers see a flat list.
 """
 
@@ -26,6 +30,7 @@ from typing import Optional
 import aiohttp
 
 from backend.core.config import settings
+from backend.datapipe.aggregation import BAR_MINUTES
 from backend.datapipe.schemas import RestAggregateBar, RestAggregateResponse
 from backend.datapipe.time_utils import date_to_iso
 
@@ -141,13 +146,14 @@ class RestClient:
         day: date,
     ) -> list[RestAggregateBar]:
         """
-        1-min bars for one ET session date. ``from`` and ``to`` share the
-        date so we don't accidentally pull the neighbouring day.
-        Massive treats these as calendar days in ET.
+        Intraday bars for one ET session date at the aggregation cadence
+        (BAR_MINUTES). ``from`` and ``to`` share the date so we don't
+        accidentally pull the neighbouring day. Massive treats these as
+        calendar days in ET.
         """
         url = (
             f"{self._base_url}/v2/aggs/ticker/{symbol}"
-            f"/range/1/minute/{date_to_iso(day)}/{date_to_iso(day)}"
+            f"/range/{BAR_MINUTES}/minute/{date_to_iso(day)}/{date_to_iso(day)}"
         )
         return await self._paged_get(url, {"adjusted": "true", "sort": "asc", "limit": 50000})
 
@@ -157,10 +163,14 @@ class RestClient:
         start_day: date,
         end_day: date,
     ) -> list[RestAggregateBar]:
-        """5-day intraday history for the RVOL baseline warmup path."""
+        """
+        Multi-day intraday history at the aggregation cadence (BAR_MINUTES).
+        Feeds the historian; Polygon returns the N-min aggregates directly,
+        so no client-side batch aggregation is needed on this path.
+        """
         url = (
             f"{self._base_url}/v2/aggs/ticker/{symbol}"
-            f"/range/1/minute/{date_to_iso(start_day)}/{date_to_iso(end_day)}"
+            f"/range/{BAR_MINUTES}/minute/{date_to_iso(start_day)}/{date_to_iso(end_day)}"
         )
         return await self._paged_get(url, {"adjusted": "true", "sort": "asc", "limit": 50000})
 

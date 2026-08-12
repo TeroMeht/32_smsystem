@@ -348,7 +348,9 @@ async def load_latest_livestream_per_symbol(
             "vwap": float(r["vwap"]) if r["vwap"] is not None else None,
             "ema9": float(r["ema9"]) if r["ema9"] is not None else None,
             "rvol_cum": float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
-            "relatr": float(r["relatr"]) if r["relatr"] is not None else None,
+            # Round relatr at the API boundary so the frontend never sees
+            # 4-decimal noise -- 2 decimals is the display precision.
+            "relatr": round(float(r["relatr"]), 2) if r["relatr"] is not None else None,
             "volume": int(r["volume"]) if r["volume"] is not None else None,
             "cum_volume": int(r["cum_volume"]) if r["cum_volume"] is not None else None,
             "chg_pct": _chg_pct(close, ref),

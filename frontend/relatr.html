@@ -57,8 +57,9 @@
   tbody tr:hover td { background: #17252b; }
   tbody tr.selected td { background: #1c2a34; }
   tr.updated td { background: rgba(80, 200, 120, 0.08); transition: background 0.9s; }
-  td.pos { color: #6ec48b; }
-  td.neg { color: #d47a7a; }
+  /* Bright palette shared with the chart candles / VWAP line. */
+  td.pos { color: #22e56d; }
+  td.neg { color: #ff4757; }
   .stale { color: #8a92a5; font-style: italic; }
 </style>
 </head>
@@ -198,7 +199,15 @@
   function fmtTime(iso) {
     if (!iso) return '-';
     const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    // 24-hour format everywhere in this app (matches backend/log convention).
+    return d.toLocaleTimeString([], {
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    });
+  }
+  function fmtNow(d) {
+    return d.toLocaleTimeString([], {
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    });
   }
 
   async function tick() {
@@ -229,7 +238,7 @@
       metaEl.textContent =
         `${rows.length} rows (relatr>=${f.minRelatr}, rvol>=${f.minRvol}, ` +
         `vol>=${f.minVolume}, cumvol>=${f.minCumVolume}, ` +
-        `${data.rows.length} received)  |  last update ${now.toLocaleTimeString()}`;
+        `${data.rows.length} received)  |  last update ${fmtNow(now)}`;
 
       const seen = new Set();
       const frag = document.createDocumentFragment();
@@ -261,7 +270,7 @@
           <td>${fmt(row.vwap, 2)}</td>
           <td>${fmt(row.ema9, 2)}</td>
           <td>${fmt(row.rvol_cum, 2)}</td>
-          <td class="${relClass}">${fmt(row.relatr, 4)}</td>
+          <td class="${relClass}">${fmt(row.relatr, 2)}</td>
           <td>${fmtInt(row.volume)}</td>
           <td>${fmtInt(row.cum_volume)}</td>
         `;

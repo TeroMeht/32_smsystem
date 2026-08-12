@@ -31,6 +31,7 @@ from backend.database.readers import (
     load_rvol_baseline_for_symbol,
 )
 from backend.database.writers import bulk_insert_livestream_bars
+from backend.datapipe.aggregation import BarAggregator
 from backend.datapipe.bar_processor import BarSink, process_bar
 from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.rest_client import RestClient
@@ -88,6 +89,9 @@ async def _initialize_livestream(
     async def _fetch(sym: str, sid: int) -> tuple[str, int, list[Bar1m]]:
         async with sem:
             raw = await rest.fetch_intraday_bars(sym, today_et)
+            # Polygon returns bars at the aggregation cadence directly
+            # (see rest_client.fetch_intraday_bars), so no client-side
+            # aggregation is needed on this priming path.
             return sym, sid, [b.to_bar1m(symbol=sym, symbolid=sid) for b in raw]
 
     fetch_results = await asyncio.gather(*[
@@ -137,13 +141,18 @@ async def _consume(
     we filter to ev=="AM" and dispatch each. Anything unparseable is logged
     but never terminates the loop.
 
+    Aggregation: each 1-min bar is fed to a per-symbol ``BarAggregator``
+    which returns the completed N-min bar only when the window closes.
+    Enrichment + DB writes fire on the aggregate, never on the raw 1-min.
+
     Signals of life:
-      * First bar per symbol -- confirms subscription for that ticker.
+      * Emitted aggregates -- confirms subscription + aggregation for that
+        ticker.
       * Ignored / dropped events -- warning level.
 
     Full-fidelity raw-frame audit lives in logs/am_stream.log via am_logger.
     """
-
+    aggregators: dict[str, BarAggregator] = {}
 
     async for raw in ws:
         try:
@@ -176,15 +185,21 @@ async def _consume(
             sid = symbol_map.get(msg.sym)
             if sid is None:
                 continue
-            bar: Bar1m = msg.to_bar1m(symbolid=sid)
+
+            raw_bar: Bar1m = msg.to_bar1m(symbolid=sid)
+            agg = aggregators.setdefault(msg.sym, BarAggregator())
+            bar = agg.feed(raw_bar)
+            if bar is None:
+                # Window not yet closed -- wait for the next 1-min bar.
+                continue
+
             try:
                 await process_bar(pool, store, bar, sink=sink)
                 logger.info(
-                    "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d VWAP=%s",
+                    "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d",
                     bar.symbol,
                     to_helsinki(bar.ts).strftime("%H:%M"),
                     bar.open, bar.high, bar.low, bar.close, bar.volume,
-                    f"{bar.vwap:.4f}" if bar.vwap is not None else "-",
                 )
             except Exception:
                 logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)
