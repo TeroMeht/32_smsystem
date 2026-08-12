@@ -156,24 +156,36 @@ async def rebuild(
     include the replay/target day itself). For live use, pass ``today``.
     """
     start_day = end_day - timedelta(days=lookback_days)
-    logger.info("Rebuilding: Rvol model [%s, %s) ", start_day, end_day)
+    window_start = datetime.combine(start_day, datetime.min.time())
+    window_end   = datetime.combine(end_day,   datetime.min.time())
 
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute(_WIPE_SQL)
             await conn.execute(
                 _REBUILD_SQL,
-                datetime.combine(start_day, datetime.min.time()),
-                datetime.combine(end_day, datetime.min.time()),
+                window_start,
+                window_end,
                 sample_sessions,
             )
-        count = await conn.fetchval("SELECT COUNT(*) FROM rvol_baseline;")
-        # Distribution of sample_days so operator can spot thin baselines
-        dist_rows = await conn.fetch(
-            "SELECT sample_days, COUNT(*) AS n "
-            "FROM rvol_baseline GROUP BY sample_days ORDER BY sample_days DESC;"
-        )
-    logger.info("Rebuilding complete -- %d rows now in table", count)
-    if dist_rows:
-        dist = {r["sample_days"]: r["n"] for r in dist_rows}
+
+        # Earliest / latest source ts that actually fed the rebuild.
+        # Cast to text server-side after setting the session tz to Helsinki
+        # so the log shows values like "2026-08-05 00:00:00+03" -- matching
+        # how the DB itself renders timestamptz for a Helsinki client.
+        # SET LOCAL scopes the tz change to this transaction only.
+        async with conn.transaction():
+            await conn.execute("SET LOCAL TIME ZONE 'Europe/Helsinki';")
+            src = await conn.fetchrow(
+                """
+                SELECT MIN(ts)::text AS earliest, MAX(ts)::text AS latest
+                  FROM intraday_bars
+                 WHERE ts >= $1 AND ts < $2;
+                """,
+                window_start, window_end,
+            )
+
+    logger.info("Rvol basemodel completed -- ts: earliest= %s, latest= %s", src["earliest"], src["latest"])
+
+
 

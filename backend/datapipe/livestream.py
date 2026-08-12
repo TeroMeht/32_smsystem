@@ -66,7 +66,7 @@ async def _initialize_livestream(
 
     intraday_bars is NOT touched -- historian owns that table.
     """
-    logger.info("initializing livestream from REST for %d symbols", len(symbol_map))
+
     today_et = session_date_et(datetime.now(timezone.utc))
 
     # ATR + baseline: cheap per-symbol reads, needed before enrichment.
@@ -89,15 +89,12 @@ async def _initialize_livestream(
     async def _fetch(sym: str, sid: int) -> tuple[str, int, list[Bar1m]]:
         async with sem:
             raw = await rest.fetch_intraday_bars(sym, today_et)
-            # Polygon returns bars at the aggregation cadence directly
-            # (see rest_client.fetch_intraday_bars), so no client-side
-            # aggregation is needed on this priming path.
             return sym, sid, [b.to_bar1m(symbol=sym, symbolid=sid) for b in raw]
 
     fetch_results = await asyncio.gather(*[
         _fetch(sym, sid) for sym, sid in symbol_map.items()
     ])
-    logger.info("REST fetch complete -- enriching + writing to livestream")
+
 
     # Enrich each symbol's bars in ts order (bars come sorted by REST) and
     # accumulate into memory state. All enriched bars get bulk-inserted.
@@ -123,10 +120,6 @@ async def _initialize_livestream(
     if all_enriched:
         await bulk_insert_livestream_bars(pool, all_enriched)
 
-    logger.info(
-        "livestream initialized -- session=%s bars=%d missing_ATR=%d missing_baseline=%d",
-        today_et.isoformat(), len(all_enriched), missing_atr, missing_baseline,
-    )
 
 
 async def _consume(

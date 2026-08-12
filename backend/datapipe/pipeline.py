@@ -70,31 +70,32 @@ async def startup(sink: BarSink | None = None) -> None:
         # historian runs on every startup regardless of when it last ran.
         # Restore the block below when done testing.
         #
-        # last_daily, last_intraday = await get_last_backfill_run(pool)
-        # need_daily    = last_daily    is None or last_daily.date()    < today
-        # need_intraday = last_intraday is None or last_intraday.date() < today
-        #
-        # if need_daily or need_intraday:
-        #     await backfill_all_symbols(
-        #         pool, _rest, today, symbol_map,
-        #         need_daily=need_daily,
-        #         need_intraday=need_intraday,
-        #         replay_mode=(mode == "replay"),
-        #     )
-        #     logger.info("Historian backfill complete")
-        # else:
-        #     logger.info(
-        #         "Backfill already ran today "
-        #         "(daily @ %s, intraday @ %s)",
-        #         last_daily, last_intraday,
-        #     )
-        await backfill_all_symbols(
-            pool, _rest, today, symbol_map,
-            need_daily=True,
-            need_intraday=True,
-            replay_mode=(mode == "replay"),
-        )
-        logger.info("Historian backfill complete (freshness gate disabled)")
+        last_daily, last_intraday = await get_last_backfill_run(pool)
+        need_daily    = last_daily    is None or last_daily.date()    < today
+        need_intraday = last_intraday is None or last_intraday.date() < today
+        
+        if need_daily or need_intraday:
+            await backfill_all_symbols(
+                pool, _rest, today, symbol_map,
+                need_daily=need_daily,
+                need_intraday=need_intraday,
+                replay_mode=(mode == "replay"),
+            )
+            logger.info("Historian backfill complete")
+        else:
+            logger.info(
+                "Backfill already ran today "
+                "(daily @ %s, intraday @ %s)",
+                last_daily, last_intraday,
+            )
+
+        # await backfill_all_symbols(
+        #     pool, _rest, today, symbol_map,
+        #     need_daily=True,
+        #     need_intraday=True,
+        #     replay_mode=(mode == "replay"),
+        # )
+        # logger.info("Historian backfill complete (freshness gate disabled)")
 
         if mode == "replay":
             start_utc = (

@@ -215,8 +215,7 @@ async def backfill_all_symbols(
         intraday_last_run = now_utc if need_intraday else None
     )
 
-    logger.info("Backfill complete (daily_rows= %d, intraday_rows= %d)",
-                daily_rows, intraday_rows)
+
 
 
 async def _run_backfill_workers(

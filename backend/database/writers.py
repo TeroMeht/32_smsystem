@@ -18,12 +18,13 @@ direct SQL. Three tables get written from the live/replay hot path:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Iterable, Optional, Sequence
 
 import asyncpg
 
 from backend.datapipe.schemas import Bar1m, DailyBar
+from backend.datapipe.time_utils import to_helsinki
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +129,13 @@ async def bulk_insert_livestream_bars(
                     relatr = EXCLUDED.relatr;
                 """
             )
+
+    earliest = min(b.ts for b in bars)
+    logger.info(
+        "Livestream table initialized -- %d bars written, earliest ts= %s",
+        len(bars),
+        to_helsinki(earliest).strftime("%Y-%m-%d %H:%M"),
+    )
 
 
 async def empty_livestream_table(pool: asyncpg.Pool) -> None:
@@ -301,7 +309,7 @@ async def bulk_insert_daily_bars(
 
 async def bulk_insert_daily_indicators(
     pool: asyncpg.Pool,
-    rows: Sequence[tuple[int, "date", float]],
+    rows: Sequence[tuple[int, date, float]],
 ) -> None:
     """
     Upsert calculated per-day indicators (currently just ATR14).
