@@ -19,7 +19,7 @@
  * <script> tag in the host page).
  */
 
-export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000 }) {
+export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000, height = 360 }) {
   // Both the axis tick labels and the crosshair tooltip need explicit
   // formatters -- otherwise lightweight-charts renders the numeric `time`
   // (unix seconds) in UTC on the axis, which desynchs against the table
@@ -83,14 +83,25 @@ export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000 })
   });
 
   // Fit to container width; keep in sync on resize.
-  chart.applyOptions({ width: containerEl.clientWidth, height: 360 });
-  window.addEventListener('resize', () => {
+  chart.applyOptions({ width: containerEl.clientWidth, height: height });
+  const _onResize = () => {
     chart.applyOptions({ width: containerEl.clientWidth });
-  });
+  };
+  window.addEventListener('resize', _onResize);
 
   // Short cache: livestream ticks each minute; anything longer than this
   // means the chart lags visibly behind the table's own row updates.
   const cache = new Map();  // symbol -> { data, fetchedAt }
+
+  function _latestLabel(bars) {
+    // "latest 16:32" (Helsinki, matching page convention) if we have bars,
+    // "no bars yet" otherwise. Used by both the click-to-load detail chart
+    // and the mini-chart grid so each cell shows when its newest candle
+    // arrived.
+    if (!bars.length) return 'no bars yet';
+    const d = new Date(bars[bars.length - 1].ts);
+    return `latest ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
 
   async function load(symbol) {
     titleEl.textContent = symbol;
@@ -100,7 +111,7 @@ export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000 })
     const cached = cache.get(symbol);
     if (cached && (now - cached.fetchedAt) < cacheTtlMs) {
       _render(cached.data);
-      infoEl.textContent = `${cached.data.length} bars this session  |  cached`;
+      infoEl.textContent = _latestLabel(cached.data);
       return;
     }
 
@@ -111,7 +122,7 @@ export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000 })
       const bars = data.bars || [];
       cache.set(symbol, { data: bars, fetchedAt: Date.now() });
       _render(bars);
-      infoEl.textContent = `${bars.length} bars this session`;
+      infoEl.textContent = _latestLabel(bars);
     } catch (e) {
       infoEl.innerHTML = `<span class="stale">error: ${e.message}</span>`;
     }
@@ -144,5 +155,14 @@ export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000 })
     chart.priceScale('right').applyOptions({ autoScale: true });
   }
 
-  return { load };
+  function dispose() {
+    // Tear down: called when a grid cell for this symbol is removed
+    // because the filter no longer matches. Frees the chart's canvases
+    // and the window resize listener.
+    window.removeEventListener('resize', _onResize);
+    chart.remove();
+    cache.clear();
+  }
+
+  return { load, dispose };
 }

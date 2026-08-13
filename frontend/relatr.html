@@ -48,6 +48,19 @@
   .chart-header .info { font-size: 12px; color: #8a92a5; }
   #chart { width: 100%; height: 360px; }
 
+  /* Grid of mini-charts: one cell per filtered symbol, 3 per row. */
+  .chart-grid { display: grid; grid-template-columns: repeat(3, 1fr);
+                gap: 12px; margin-top: 20px; }
+  .grid-cell { border: 1px solid #1e232d; border-radius: 6px;
+               background: #12161d; overflow: hidden; }
+  .grid-cell .cell-header { display: flex; justify-content: space-between;
+                            align-items: baseline; padding: 6px 10px;
+                            border-bottom: 1px solid #1e232d;
+                            font-size: 12px; }
+  .grid-cell .cell-symbol { color: #e6e8ec; font-weight: 600; }
+  .grid-cell .cell-info { color: #8a92a5; font-size: 11px; }
+  .grid-cell .cell-body { width: 100%; height: 180px; }
+
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid #1e232d; }
   th { text-align: right; font-size: 11px; color: #8a92a5; font-weight: 500;
@@ -58,8 +71,13 @@
   tbody tr.selected td { background: #1c2a34; }
   tr.updated td { background: rgba(80, 200, 120, 0.08); transition: background 0.9s; }
   /* Bright palette shared with the chart candles / VWAP line. */
+  /* Bright palette shared with the chart candles / VWAP line. */
   td.pos { color: #22e56d; }
   td.neg { color: #ff4757; }
+  /* "Send to TradingView" launcher in each row. */
+  a.tv-btn { color: #6aa7ff; text-decoration: none; font-size: 14px;
+             padding: 0 4px; }
+  a.tv-btn:hover { color: #b3d0ff; }
   .stale { color: #8a92a5; font-style: italic; }
 </style>
 </head>
@@ -105,6 +123,10 @@
     <div id="chart"></div>
   </div>
 
+  <!-- Mini-chart grid: one cell per filter-matched symbol, 3 per row.
+       Reconciled and refreshed on the same interval as the table. -->
+  <div id="chartGrid" class="chart-grid"></div>
+
   <table id="tbl">
     <thead>
       <tr>
@@ -119,6 +141,7 @@
         <th>RelATR</th>
         <th>Volume</th>
         <th>CumVol</th>
+        <th>TV</th>
       </tr>
     </thead>
     <tbody id="body"></tbody>
@@ -171,12 +194,85 @@
 
   let FILTERS = loadFilters();
 
+  // ---------- TradingView deep-link ---------------------------------------
+  // Every table row gets a small ↗ button that opens the symbol in your
+  // saved TradingView layout (new tab). Layout id lives here so the button
+  // stays alive even when the exchange column is empty -- we fall back to
+  // a bare symbol, which TradingView usually resolves for US mid/large caps.
+  const TV_LAYOUT_ID = '4KgtaCO3';
+  function tvUrl(row) {
+    const sym = row.exchange
+      ? `${row.exchange}:${row.symbol}`
+      : row.symbol;
+    return `https://www.tradingview.com/chart/${TV_LAYOUT_ID}/?symbol=${encodeURIComponent(sym)}`;
+  }
+
   // ---------- chart -------------------------------------------------------
   const chartApi = initChart({
     containerEl: document.getElementById('chart'),
     titleEl:     document.getElementById('chartSymbol'),
     infoEl:      document.getElementById('chartInfo'),
   });
+
+  // ---------- mini-chart grid --------------------------------------------
+  // One chart per filter-matched symbol, 3 per row, reconciled + refreshed
+  // on each poll tick. Each grid chart shares chart.js with the top chart,
+  // but with a smaller height and shorter cache (fresh data every tick).
+  const chartGridEl = document.getElementById('chartGrid');
+  const gridCharts = new Map();  // symbol -> { chart, cell }
+
+  function mountGridCell(symbol) {
+    const cell = document.createElement('div');
+    cell.className = 'grid-cell';
+    cell.dataset.symbol = symbol;
+    cell.innerHTML = `
+      <div class="cell-header">
+        <span class="cell-symbol">${symbol}</span>
+        <span class="cell-info"></span>
+      </div>
+      <div class="cell-body"></div>
+    `;
+    chartGridEl.appendChild(cell);
+    const chart = initChart({
+      containerEl: cell.querySelector('.cell-body'),
+      titleEl:     cell.querySelector('.cell-symbol'),
+      infoEl:      cell.querySelector('.cell-info'),
+      height:      180,
+      cacheTtlMs:  3000,   // short cache so grid updates feel live
+    });
+    gridCharts.set(symbol, { chart, cell });
+  }
+
+  function unmountGridCell(symbol) {
+    const entry = gridCharts.get(symbol);
+    if (!entry) return;
+    entry.chart.dispose();
+    entry.cell.remove();
+    gridCharts.delete(symbol);
+  }
+
+  function reconcileGrid(orderedSymbols) {
+    const wanted = new Set(orderedSymbols);
+    // Drop cells whose symbol no longer matches the filter.
+    for (const sym of Array.from(gridCharts.keys())) {
+      if (!wanted.has(sym)) unmountGridCell(sym);
+    }
+    // Add + reorder to match the table's ranking.
+    let prev = null;
+    for (const sym of orderedSymbols) {
+      if (!gridCharts.has(sym)) mountGridCell(sym);
+      const { cell } = gridCharts.get(sym);
+      if (prev === null) chartGridEl.prepend(cell);
+      else prev.after(cell);
+      prev = cell;
+    }
+    // Refresh every cell's bars. chart.load(symbol) hits /api/livestream/bars/{sym};
+    // the short cache means each tick actually fetches, so new 2-min bars land as
+    // soon as they're written to the livestream table.
+    for (const [sym, { chart }] of gridCharts) {
+      chart.load(sym);
+    }
+  }
 
   // ---------- table polling ----------------------------------------------
   const bodyEl = document.getElementById('body');
@@ -273,6 +369,8 @@
           <td class="${relClass}">${fmt(row.relatr, 2)}</td>
           <td>${fmtInt(row.volume)}</td>
           <td>${fmtInt(row.cum_volume)}</td>
+          <td><a class="tv-btn" href="${tvUrl(row)}" target="tradingview"
+                 onclick="event.stopPropagation()" title="Open in TradingView (reuses same tab)">↗</a></td>
         `;
         frag.appendChild(tr);
       }
@@ -280,6 +378,12 @@
       for (const k of Array.from(lastTsBySymbol.keys())) {
         if (!seen.has(k)) lastTsBySymbol.delete(k);
       }
+
+      // Mini-chart grid: sync cells to the same filtered/ordered set as
+      // the table, then refresh each cell's bars. Runs on every tick, so
+      // when the poll interval is 5s and BAR_MINUTES=2, every grid chart
+      // picks up new candles within ~5s of them being written.
+      reconcileGrid(rows.map(r => r.symbol));
     } catch (e) {
       metaEl.innerHTML = `<span class="stale">error: ${e.message}</span>`;
     }

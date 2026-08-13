@@ -314,6 +314,7 @@ async def load_latest_livestream_per_symbol(
             WITH latest AS (
                 SELECT DISTINCT ON (l.symbolid)
                        ms.symbol,
+                       ms.exchange,
                        l.symbolid,
                        l.ts,
                        l.close,
@@ -385,6 +386,7 @@ async def load_latest_livestream_per_symbol(
         ref = _ref(pm_open, prev_close)
         out.append({
             "symbol": r["symbol"],
+            "exchange": r["exchange"],
             "ts": r["ts"].isoformat(),
             "close": close,
             "vwap": float(r["vwap"]) if r["vwap"] is not None else None,

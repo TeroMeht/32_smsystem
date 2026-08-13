@@ -13,6 +13,7 @@
 CREATE TABLE monitored_symbols (
     symbolid     serial      PRIMARY KEY,
     symbol       text        NOT NULL UNIQUE,
+    exchange     text,                              -- 'NASDAQ' / 'NYSE' / ... (TradingView prefix)
     market_cap   bigint,
     adv_dollar   bigint,
     last_refresh timestamptz,

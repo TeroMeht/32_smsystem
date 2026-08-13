@@ -72,16 +72,17 @@ def main() -> None:
             log.info("  deactivated:  %s", _sample(list(to_deactivate)))
 
             rows = [
-                (r.symbol, int(r.market_cap), int(r.adv_dollar), now, True)
+                (r.symbol, r.exchange, int(r.market_cap), int(r.adv_dollar), now, True)
                 for r in df.itertuples()
             ]
             psycopg2.extras.execute_values(
                 cur,
                 """
                 INSERT INTO monitored_symbols
-                    (symbol, market_cap, adv_dollar, last_refresh, active)
+                    (symbol, exchange, market_cap, adv_dollar, last_refresh, active)
                 VALUES %s
                 ON CONFLICT (symbol) DO UPDATE SET
+                    exchange     = EXCLUDED.exchange,
                     market_cap   = EXCLUDED.market_cap,
                     adv_dollar   = EXCLUDED.adv_dollar,
                     last_refresh = EXCLUDED.last_refresh,
