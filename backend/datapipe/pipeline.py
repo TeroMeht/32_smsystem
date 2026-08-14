@@ -24,7 +24,7 @@ import logging
 
 from backend.core.config import settings
 from backend.database.partitions import drop_old_partitions
-from backend.database.pool import close_pool, init_pool
+from backend.dependencies import close_pool, init_pool
 from backend.database.readers import get_last_backfill_run, load_active_symbol_map
 from backend.database.writers import empty_livestream_table
 from backend.datapipe.runtime.bar_processor import BarSink

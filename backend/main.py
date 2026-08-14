@@ -1,13 +1,17 @@
 """
 FastAPI entrypoint.
 
-  * On lifespan startup, call ``datapipe.pipeline.startup`` -- this
-    creates the DB pool, warms the historian, and spawns the background
-    task (WS livestream in live mode, replay driver in replay mode).
+  * On lifespan startup, call ``datapipe.pipeline.startup`` -- creates the
+    DB pool, warms the historian, and spawns the background task (WS
+    livestream in live mode, replay driver in replay mode).
   * On lifespan shutdown, cancel it via ``datapipe.pipeline.shutdown``.
 
 Mode selection is driven entirely by settings.MODE / env; there is no
 runtime endpoint to switch or trigger replays.
+
+All HTTP routes live in ``backend.routers.*`` and are composed here via
+``include_router``. Route bodies MUST NOT contain SQL -- all persistence
+goes through ``backend.database``.
 """
 
 from __future__ import annotations
@@ -16,19 +20,14 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
 from backend.common.logging_config import setup_app_logging
-from backend.core.config import settings
-from backend.database.pool import get_pool
-from backend.database.readers import (
-    load_latest_livestream_per_symbol,
-    load_livestream_bars_for_symbol,
-)
 from backend.datapipe import pipeline
+from backend.routers import livestream as livestream_routes
+from backend.routers import pages as pages_routes
 
 
 # ---------------------------------------------------------------------------
@@ -84,56 +83,8 @@ class NoCacheStaticFiles(StaticFiles):
 app.mount("/ui", NoCacheStaticFiles(directory=FRONTEND_DIR), name="frontend")
 
 
-@app.get("/health")
-async def health():
-    return {"ok": True, "mode": settings.MODE, "replay_day": (
-        settings.REPLAY_DAY.isoformat() if settings.REPLAY_DAY else None
-    )}
-
-
 # ---------------------------------------------------------------------------
-# /relatr -- live dashboard: top-N latest RelATR per symbol, polling refresh
+# Route composition -- all endpoints live under backend/routers/.
 # ---------------------------------------------------------------------------
-
-
-@app.get("/api/livestream/top")
-async def api_livestream_top():
-    """
-    Latest livestream row per symbol -- ALL rows, unfiltered, unsorted.
-
-    Display concerns (volume floor, RVOL floor, RelATR floor, sort order,
-    row cap) live entirely in the frontend so they can be tweaked without
-    touching backend code.
-    """
-    pool = get_pool()
-    rows = await load_latest_livestream_per_symbol(pool)
-    return {"rows": rows}
-
-
-@app.get("/api/livestream/bars/{symbol}")
-async def api_livestream_bars(symbol: str):
-    """
-    Every livestream row currently on disk for the symbol, ordered by ts.
-    Since livestream is truncated at session start, this is the current
-    session in progress -- feeds the frontend candlestick chart on hover.
-    """
-    pool = get_pool()
-    rows = await load_livestream_bars_for_symbol(pool, symbol.upper())
-    return {"symbol": symbol.upper(), "bars": rows}
-
-
-# ---------------------------------------------------------------------------
-# Frontend page -- served from the frontend/ folder as a plain file so
-# main.py stays free of UI markup.
-# ---------------------------------------------------------------------------
-
-
-@app.get("/relatr")
-async def relatr_page():
-    path = FRONTEND_DIR / "relatr.html"
-    if not path.exists():
-        raise HTTPException(status_code=500, detail=f"UI file missing: {path}")
-    return FileResponse(
-        path, media_type="text/html",
-        headers={"Cache-Control": "no-store"},
-    )
+app.include_router(livestream_routes.router)
+app.include_router(pages_routes.router)

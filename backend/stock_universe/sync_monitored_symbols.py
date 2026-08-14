@@ -1,23 +1,31 @@
 """
-Step 6 — sync universe_liquid.csv into the monitored_symbols table.
+Step 6 - sync universe_liquid.csv into the monitored_symbols table.
 
 Behaviour:
   - INSERT new tickers (auto-assigns symbolid)
-  - UPDATE existing tickers' market_cap, adv_dollar, last_refresh, active=true
+  - UPDATE existing tickers' exchange / market_cap / adv_dollar /
+    last_refresh, force active=true (auto-reactivates returning ones)
   - DEACTIVATE previously-active tickers no longer in the universe
-    (active=false — never DELETE, so intraday_bars/daily FKs stay intact
-    and history is preserved)
+    (active=false; never DELETE, so intraday_bars/daily FKs stay intact)
 
 Input: DATA_DIR / universe_liquid.csv
+
+This module is pure orchestration + logging. All SQL lives in
+``backend.database.universe``.
 """
 
 from datetime import datetime, timezone
 
 import pandas as pd
-import psycopg2.extras
 
 from backend.common.logging_config import setup_logging
 from backend.database.connection import connect
+from backend.database.universe import (
+    count_symbols,
+    deactivate_symbols,
+    fetch_symbol_active_map,
+    upsert_symbols,
+)
 from backend.stock_universe.paths import DATA_DIR, LOGS_DIR
 
 log = setup_logging("sync_monitored_symbols", LOGS_DIR)
@@ -46,72 +54,45 @@ def main() -> None:
     now = datetime.now(timezone.utc)
 
     with connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT symbol, active FROM monitored_symbols")
-            current = {sym: active for sym, active in cur.fetchall()}
-            log.info("Current table state: %d rows (%d active)",
-                     len(current), sum(current.values()))
+        current = fetch_symbol_active_map(conn)
+        log.info("Current table state: %d rows (%d active)",
+                 len(current), sum(current.values()))
 
-            existing = set(current)
-            currently_active = {s for s, a in current.items() if a}
+        existing = set(current)
+        currently_active = {s for s, a in current.items() if a}
 
-            to_insert       = new_symbols - existing
-            to_update       = new_symbols & existing
-            to_deactivate   = currently_active - new_symbols
-            to_reactivate   = (new_symbols & existing) - currently_active
+        to_insert     = new_symbols - existing
+        to_update     = new_symbols & existing
+        to_deactivate = currently_active - new_symbols
+        to_reactivate = (new_symbols & existing) - currently_active
 
-            log.info("")
-            log.info("Planned changes:")
-            log.info("  INSERT new tickers:        %5d", len(to_insert))
-            log.info("  UPDATE existing tickers:   %5d", len(to_update))
-            log.info("    - reactivating:          %5d", len(to_reactivate))
-            log.info("  DEACTIVATE removed:        %5d", len(to_deactivate))
-            log.info("")
-            log.info("  new:          %s", _sample(list(to_insert)))
-            log.info("  reactivated:  %s", _sample(list(to_reactivate)))
-            log.info("  deactivated:  %s", _sample(list(to_deactivate)))
+        log.info("")
+        log.info("Planned changes:")
+        log.info("  INSERT new tickers:        %5d", len(to_insert))
+        log.info("  UPDATE existing tickers:   %5d", len(to_update))
+        log.info("    - reactivating:          %5d", len(to_reactivate))
+        log.info("  DEACTIVATE removed:        %5d", len(to_deactivate))
+        log.info("")
+        log.info("  new:          %s", _sample(list(to_insert)))
+        log.info("  reactivated:  %s", _sample(list(to_reactivate)))
+        log.info("  deactivated:  %s", _sample(list(to_deactivate)))
 
-            rows = [
-                (r.symbol, r.exchange, int(r.market_cap), int(r.adv_dollar), now, True)
-                for r in df.itertuples()
-            ]
-            psycopg2.extras.execute_values(
-                cur,
-                """
-                INSERT INTO monitored_symbols
-                    (symbol, exchange, market_cap, adv_dollar, last_refresh, active)
-                VALUES %s
-                ON CONFLICT (symbol) DO UPDATE SET
-                    exchange     = EXCLUDED.exchange,
-                    market_cap   = EXCLUDED.market_cap,
-                    adv_dollar   = EXCLUDED.adv_dollar,
-                    last_refresh = EXCLUDED.last_refresh,
-                    active       = true
-                """,
-                rows,
-                page_size=500,
-            )
-            log.info("Upserted %d rows", len(rows))
+        rows = [
+            (r.symbol, r.exchange, int(r.market_cap), int(r.adv_dollar), now, True)
+            for r in df.itertuples()
+        ]
+        upsert_symbols(conn, rows)
+        log.info("Upserted %d rows", len(rows))
 
-            if to_deactivate:
-                cur.execute(
-                    """
-                    UPDATE monitored_symbols
-                       SET active = false, last_refresh = %s
-                     WHERE symbol = ANY(%s) AND active = true
-                    """,
-                    (now, list(to_deactivate)),
-                )
-                log.info("Deactivated %d rows", cur.rowcount)
+        deactivated = deactivate_symbols(conn, list(to_deactivate), now)
+        if deactivated:
+            log.info("Deactivated %d rows", deactivated)
 
-            conn.commit()
-            log.info("Transaction committed")
+        conn.commit()
+        log.info("Transaction committed")
 
-            cur.execute(
-                "SELECT COUNT(*) FILTER (WHERE active), COUNT(*) FROM monitored_symbols"
-            )
-            active_cnt, total_cnt = cur.fetchone()
-            log.info("Final table state: %d active / %d total", active_cnt, total_cnt)
+        active_cnt, total_cnt = count_symbols(conn)
+        log.info("Final table state: %d active / %d total", active_cnt, total_cnt)
 
 
 if __name__ == "__main__":
