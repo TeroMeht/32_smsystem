@@ -12,11 +12,9 @@ bar cheaply:
                                 the current slot's baseline, this forms
                                 the cumulative denominator for RVOL.
 
-The state can be rehydrated on process restart from ``load_session_bars``
-in backend.database.readers, but the RVOL denominator is a session-local
-concept -- on a mid-session restart you'd want to rebuild
-``baseline_history_sum`` from the sequence of already-persisted bars'
-slots. Not implemented yet.
+Not persisted across process restarts today; a mid-session restart
+rebuilds state fresh from the REST prime (livestream) or from
+``intraday_bars`` (replay).
 """
 
 from __future__ import annotations
@@ -47,7 +45,7 @@ class SymbolSessionState:
 
 
 class SessionStore:
-    """symbol -> SymbolSessionState. Reset at each session boundary."""
+    """symbol -> SymbolSessionState. New instance per session boundary."""
 
     def __init__(self) -> None:
         self._by_symbol: dict[str, SymbolSessionState] = {}
@@ -63,12 +61,3 @@ class SessionStore:
             st = SymbolSessionState(symbol=symbol, symbolid=symbolid, session_date=session_date)
             self._by_symbol[symbol] = st
         return st
-
-    def all(self) -> dict[str, SymbolSessionState]:
-        return dict(self._by_symbol)
-
-    def reset(self) -> None:
-        self._by_symbol.clear()
-
-    def contains(self, symbol: str) -> bool:
-        return symbol in self._by_symbol

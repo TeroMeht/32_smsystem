@@ -26,12 +26,17 @@ from backend.datapipe.time_utils import HELSINKI
 
 
 async def load_active_symbol_map(pool: asyncpg.Pool) -> MonitoredSymbols:
-    """Active monitored-symbol universe wrapped in a typed snapshot."""
+    """
+    Active monitored-symbol universe as {symbol: symbolid}.
+
+    ``MonitoredSymbols`` is a type alias for ``dict[str, int]`` (see
+    schemas.py). Treated as read-only by convention downstream.
+    """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             "SELECT symbol, symbolid FROM monitored_symbols WHERE active = true;"
         )
-    return MonitoredSymbols(by_symbol={r["symbol"]: r["symbolid"] for r in rows})
+    return {r["symbol"]: r["symbolid"] for r in rows}
 
 
 async def load_latest_atr_map(pool: asyncpg.Pool) -> dict[int, float]:
@@ -88,57 +93,6 @@ async def load_daily_for_atr_compute(
         }
         for r in rows
     ]
-
-
-async def load_session_bars(
-    pool: asyncpg.Pool,
-    symbolid: int,
-    session_start_utc: datetime,
-) -> list[Bar1m]:
-    """
-    All livestream bars for ``symbolid`` since ``session_start_utc``,
-    chronological. Used to rehydrate the in-memory per-symbol history if
-    the live loop restarts mid-session.
-    """
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT symbolid, ts, open, high, low, close, volume,
-                   vwap, ema9, rvol_cum, relatr
-              FROM livestream
-             WHERE symbolid = $1 AND ts >= $2
-             ORDER BY ts ASC;
-            """,
-            symbolid, session_start_utc,
-        )
-    sym_row = await _fetch_symbol_for_id(pool, symbolid)
-    symbol = sym_row or ""
-    return [
-        Bar1m(
-            symbol=symbol,
-            symbolid=r["symbolid"],
-            ts=r["ts"],
-            open=float(r["open"]),
-            high=float(r["high"]),
-            low=float(r["low"]),
-            close=float(r["close"]),
-            volume=int(r["volume"]),
-            vwap=float(r["vwap"]) if r["vwap"] is not None else None,
-            ema9=float(r["ema9"]) if r["ema9"] is not None else None,
-            rvol_cum=float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
-            relatr=float(r["relatr"]) if r["relatr"] is not None else None,
-        )
-        for r in rows
-    ]
-
-
-async def _fetch_symbol_for_id(pool: asyncpg.Pool, symbolid: int) -> Optional[str]:
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT symbol FROM monitored_symbols WHERE symbolid = $1;",
-            symbolid,
-        )
-    return row["symbol"] if row else None
 
 
 async def load_livestream_bars_for_symbol(

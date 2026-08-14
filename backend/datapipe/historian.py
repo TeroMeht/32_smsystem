@@ -136,7 +136,7 @@ async def backfill_all_symbols(
         how many rows each side added, so the next startup can gate
         itself.
 
-    Partition retention (``drop_old_partitions``) and universe loading are
+    Retention cleanup (``data_cleanup``) and universe loading are
     both handled by ``pipeline.startup`` before this runs -- we just make
     sure the forward-looking partitions exist.
     """

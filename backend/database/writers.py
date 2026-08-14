@@ -18,6 +18,7 @@ direct SQL. Three tables get written from the live/replay hot path:
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from datetime import date, datetime
 from typing import Iterable, Optional, Sequence
 
@@ -131,10 +132,15 @@ async def bulk_insert_livestream_bars(
             )
 
     earliest = min(b.ts for b in bars)
+    # Top-5 symbols by bar count -- quick visual on which tickers had the
+    # longest already-occurred sessions when priming.
+    counts = Counter(b.symbol for b in bars)
+    top_str = ", ".join(f"{sym}={n}" for sym, n in counts.most_common(20))
     logger.info(
-        "Livestream table initialized -- %d bars written, earliest ts= %s",
+        "Livestream table initialized -- %d bars written, earliest ts= %s, top: %s",
         len(bars),
         to_helsinki(earliest).strftime("%Y-%m-%d %H:%M"),
+        top_str,
     )
 
 
@@ -152,28 +158,6 @@ async def empty_livestream_table(pool: asyncpg.Pool) -> None:
 # ---------------------------------------------------------------------------
 # intraday_bars (permanent, partitioned)
 # ---------------------------------------------------------------------------
-
-
-_INSERT_INTRADAY_SQL = """
-    INSERT INTO intraday_bars
-        (symbolid, ts, open, high, low, close, volume)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    ON CONFLICT (symbolid, ts) DO UPDATE SET
-        open = EXCLUDED.open,
-        high = EXCLUDED.high,
-        low = EXCLUDED.low,
-        close = EXCLUDED.close,
-        volume = EXCLUDED.volume;
-"""
-
-
-async def insert_intraday_bar(pool: asyncpg.Pool, bar: Bar1m) -> None:
-    async with pool.acquire() as conn:
-        await conn.execute(
-            _INSERT_INTRADAY_SQL,
-            bar.symbolid, bar.ts,
-            bar.open, bar.high, bar.low, bar.close, bar.volume,
-        )
 
 
 async def bulk_insert_intraday_bars(
@@ -195,8 +179,7 @@ async def bulk_insert_intraday_bars(
         does one plan + one execution.
       * DO NOTHING is safe here because Massive's historical bars are
         immutable -- a duplicate (symbolid, ts) means we already have the
-        canonical values. The live path (insert_intraday_bar) still uses
-        DO UPDATE for late corrections.
+        canonical values.
     """
     if not bars:
         return

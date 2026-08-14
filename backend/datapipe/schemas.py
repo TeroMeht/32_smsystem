@@ -21,9 +21,8 @@ the raw API dicts.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import date, datetime, time, timezone
-from typing import Iterator, Optional
+from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -188,45 +187,8 @@ class DailyBar(BaseModel):
 # ---------------------------------------------------------------------------
 # Active-symbol universe
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class MonitoredSymbols:
-    """
-    Snapshot of the active monitored-symbol universe.
-
-    Loaded once by ``load_active_symbol_map`` at pipeline startup and passed
-    read-only through ``run_livestream`` / ``run_replay``. Wrapping the raw
-    dict in a typed value keeps callers from redundantly reloading it and
-    from mutating it mid-run.
-
-    ``by_symbol`` maps ticker -> symbolid. Convenience accessors
-    (``__len__``, ``items``, ``keys``, ``values``, ``get``) delegate to it
-    so existing dict-style call sites keep working.
-    """
-
-    by_symbol: dict[str, int] = field(default_factory=dict)
-
-    def __len__(self) -> int:
-        return len(self.by_symbol)
-
-    def __bool__(self) -> bool:
-        return bool(self.by_symbol)
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.by_symbol)
-
-    def __contains__(self, symbol: object) -> bool:
-        return symbol in self.by_symbol
-
-    def items(self):
-        return self.by_symbol.items()
-
-    def keys(self):
-        return self.by_symbol.keys()
-
-    def values(self):
-        return self.by_symbol.values()
-
-    def get(self, symbol: str) -> Optional[int]:
-        return self.by_symbol.get(symbol)
+# Loaded once by ``load_active_symbol_map`` at pipeline startup and passed
+# read-only through ``run_livestream`` / ``run_replay``. Treated as
+# read-only by convention -- if you need enforced immutability, wrap in
+# ``types.MappingProxyType`` at the load site.
+MonitoredSymbols = dict[str, int]  # symbol -> symbolid

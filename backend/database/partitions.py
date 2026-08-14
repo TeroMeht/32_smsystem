@@ -89,19 +89,19 @@ async def ensure_partitions_for_dates(
                 len(intra), len(daily))
 
 
-async def drop_old_partitions(pool: asyncpg.Pool, today: date) -> None:
+async def data_cleanup(pool: asyncpg.Pool, today: date) -> None:
     """
-    Drop intraday partitions older than ``today - settings.INTRADAY_BACKFILL_DAYS``
-    and daily / daily_indicators partitions older than
+    Drop intraday data older than ``today - settings.INTRADAY_BACKFILL_DAYS``
+    and daily / daily_indicators data older than
     ``today - settings.DAILY_BACKFILL_DAYS``.
 
     Retention window equals the backfill window -- whatever we fetch is
-    kept, and everything older gets dropped by dropping the partition
-    table entirely (fast, no row-by-row delete). Safe to run on every
-    startup; missing tables are ignored (IF EXISTS).
+    kept, and everything older gets purged. Implemented under the hood
+    by dropping the day-partition tables (fast, no row-by-row delete);
+    safe to run on every startup, missing tables are ignored.
     """
     # Retention semantics: "N-day window" means we keep N dates inclusive
-    # of today -- so the earliest kept partition is today - (N - 1), and
+    # of today -- so the earliest kept date is today - (N - 1), and
     # anything strictly before that gets dropped.
     intraday_cutoff = today - timedelta(days=settings.INTRADAY_BACKFILL_DAYS - 1)
     daily_cutoff    = today - timedelta(days=settings.DAILY_BACKFILL_DAYS    - 1)
@@ -123,21 +123,21 @@ async def drop_old_partitions(pool: asyncpg.Pool, today: date) -> None:
                 suffix = name.rsplit("_", 1)[-1]
                 part_date = date(int(suffix[0:4]), int(suffix[4:6]), int(suffix[6:8]))
             except (ValueError, IndexError):
-                logger.warning("Skipping partition with unparseable name: %s", name)
+                logger.warning("Skipping table with unparseable date suffix: %s", name)
                 continue
 
             # intraday_bars keeps the tighter window; daily + daily_indicators
-            # share the 14-day retention.
+            # share the daily-backfill retention.
             cutoff = intraday_cutoff if name.startswith("intraday_bars") else daily_cutoff
             if part_date < cutoff:
                 await conn.execute(f"DROP TABLE IF EXISTS {name};")
                 dropped.append(name)
-                logger.debug("Dropped %s (before %s)", name, cutoff)
+                logger.debug("Cleaned up %s (before %s)", name, cutoff)
 
     if dropped:
         logger.info(
-            "Dropped %d partition(s) past retention: %s",
+            "Data cleanup: purged %d day(s): %s",
             len(dropped), ", ".join(sorted(dropped)),
         )
     else:
-        logger.info("No partitions past retention (nothing to drop)")
+        logger.info("Data cleanup: no old data dropped")

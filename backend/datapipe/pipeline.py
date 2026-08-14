@@ -7,7 +7,7 @@ main.py). Keeps ``main.py`` free of pipeline plumbing details.
 Sequence on startup:
 
     1. init_pool           -- asyncpg pool up
-    2. drop_old_partitions -- respect retention before we write
+    2. data_cleanup         -- respect retention before we write
     3. backfill_all_symbols (historian) -- daily + intraday + rvol_baseline
     4. empty_livestream_table -- fresh session
     5. run_livestream      -- WS AM consumer, background task
@@ -23,7 +23,7 @@ import asyncio
 import logging
 
 from backend.core.config import settings
-from backend.database.partitions import drop_old_partitions
+from backend.database.partitions import data_cleanup
 from backend.dependencies import close_pool, init_pool
 from backend.database.readers import get_last_backfill_run, load_active_symbol_map
 from backend.database.writers import empty_livestream_table
@@ -63,7 +63,7 @@ async def startup(sink: BarSink | None = None) -> None:
 
     _rest = RestClient()
     try:
-        await drop_old_partitions(pool, today)
+        await data_cleanup(pool, today)
         await empty_livestream_table(pool)
 
         # TESTING: backfill_status freshness gate is temporarily disabled --
