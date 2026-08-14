@@ -41,8 +41,13 @@ from backend.database.writers import (
     bulk_insert_intraday_bars,
     record_backfill_run,
 )
-from backend.datapipe.calculations import compute_atr_series
-from backend.datapipe.sources.rest_client import RestClient
+from backend.datapipe.calculations import calculate_atr_series
+
+from backend.dependencies import RestClient
+from backend.datapipe.sources.datasource import (
+    fetch_daily_bars_range,
+    fetch_intraday_bars_range,
+)
 from backend.datapipe.schemas import Bar1m, DailyBar, MonitoredSymbols
 from backend.datapipe.time_utils import previous_trading_day, session_date_et
 
@@ -72,7 +77,7 @@ async def _backfill_daily_for_symbol(
     after the raw daily inserts finish.
     """
     start = up_to - timedelta(days=settings.DAILY_BACKFILL_DAYS * 2)
-    raw = await rest.fetch_daily_bars_range(symbol, start_day=start, end_day=up_to)
+    raw = await fetch_daily_bars_range(rest, symbol, start_day=start, end_day=up_to)
     if not raw:
         return []
     return [
@@ -102,7 +107,7 @@ async def _backfill_intraday_for_symbol(
     Polygon. Polygon does the aggregation server-side, so no client
     batching is needed here.
     """
-    raw = await rest.fetch_intraday_bars_range(symbol, start_day, end_day)
+    raw = await fetch_intraday_bars_range(rest, symbol, start_day, end_day)
     return [b.to_bar1m(symbol=symbol, symbolid=symbolid) for b in raw]
 
 
@@ -153,17 +158,7 @@ async def backfill_all_symbols(
     daily_days    = [today - timedelta(days=i) for i in range(settings.DAILY_BACKFILL_DAYS)]
     await ensure_partitions_for_dates(pool, intraday_days, daily_days)
 
-    # 2. Build todo lists per the caller's need_* flags.
-    #
-    # intraday_end: replay driver reads REPLAY_DAY's intraday from disk, so
-    #   in replay mode we must fetch through ``today`` (= REPLAY_DAY). In
-    #   live mode historian stops at yesterday and livestream primes today
-    #   via a separate REST pass.
-    # daily_end:  daily fetch ALWAYS stops at the previous trading day, in
-    #   both modes. Rationale: RelATR should use YESTERDAY's ATR against
-    #   today's bars. If historian fetched today's own daily row (available
-    #   in replay, available post-close in live), that value would fold
-    #   into ATR14 and leak look-ahead into RelATR for the same day.
+
     intraday_end = today if replay_mode else today - timedelta(days=1)
     daily_end    = previous_trading_day(today)
 
@@ -349,23 +344,16 @@ async def _compute_daily_indicators(pool: asyncpg.Pool, today: date) -> None:
     the write-side partitions.
     """
     since = today - timedelta(days=settings.DAILY_BACKFILL_DAYS - 1)
-    rows = await load_daily_for_atr_compute(pool, since)
-    if not rows:
-        logger.info("daily_indicators: no raw daily rows in window -- nothing to compute")
-        return
+    df = await load_daily_for_atr_compute(pool, since)
 
-    df = pd.DataFrame(rows)  # cols: symbolid, date, high, low, close
-    # compute_atr_series expects Title-Case columns.
-    df = df.rename(columns={"high": "High", "low": "Low", "close": "Close"})
-    df.sort_values(["symbolid", "date"], inplace=True)
+# Ensure ATR14 is computed per symbol, then bulk-insert the results into
+    for _, grp in df.groupby("symbolid", sort=False):
+        enriched = calculate_atr_series(grp, span=settings.ATR_SAMPLE_SESSIONS)
+        df.loc[grp.index, "atr"] = enriched["atr"]
 
-    out: list[tuple[int, date, float]] = []
-    for sid, grp in df.groupby("symbolid", sort=False):
-        atr = compute_atr_series(grp)  # period from settings.ATR_SAMPLE_SESSIONS
-        for (_, r), val in zip(grp.iterrows(), atr):
-            if pd.isna(val):
-                continue
-            out.append((int(sid), r["date"], float(val)))
+    df.dropna(subset=["atr"], inplace=True)
+
+    out = list(df[["symbolid", "date", "atr"]].itertuples(index=False, name=None))
 
     if not out:
         logger.info("daily_indicators: no ATR values produced -- nothing to write")

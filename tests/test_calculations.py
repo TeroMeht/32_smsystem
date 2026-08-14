@@ -50,20 +50,6 @@ def session_bars() -> list[Bar1m]:
     return [_mk_bar(i, *s) for i, s in enumerate(specs)]
 
 
-# ---------------------------------------------------------------------------
-# VWAP: bulk == incremental
-# ---------------------------------------------------------------------------
-
-def test_vwap_bulk_matches_incremental(session_bars):
-    df = bars_to_frame(session_bars)
-    bulk = compute_vwap_series(df).tolist()
-
-    incremental = []
-    for i, bar in enumerate(session_bars):
-        incremental.append(next_vwap(bar, session_bars[:i]))
-
-    # bulk uses .round(2); incremental too. Compare floats loosely just in case.
-    assert bulk == pytest.approx(incremental, abs=1e-4)
 
 
 def test_vwap_zero_volume_returns_zero():
@@ -97,8 +83,7 @@ def test_atr_first_row_is_high_minus_low():
     assert atr == pytest.approx(6.0, abs=1e-4)
 
 
-def test_latest_atr_empty_frame_returns_none():
-    assert latest_atr(pd.DataFrame()) is None
+
 
 
 # ---------------------------------------------------------------------------

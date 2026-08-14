@@ -2,3 +2,5 @@
 C:\codebase\dev\32_smsystem> python -m backend.stock_universe.run
 
 
+Rest client will be initialized and used from dependencies. rest_client.py has to be renamed to data_source.py with endpoint hitting functions.
+They will be handed rest client instance on their function calls. 

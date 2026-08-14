@@ -20,7 +20,7 @@ from datetime import date, datetime, time
 from typing import Iterable, Optional
 
 import asyncpg
-
+import pandas as pd
 from backend.datapipe.schemas import Bar1m, MonitoredSymbols
 from backend.datapipe.time_utils import HELSINKI
 
@@ -60,19 +60,8 @@ async def load_latest_atr_map(pool: asyncpg.Pool) -> dict[int, float]:
     return {r["symbolid"]: float(r["atr"]) for r in rows}
 
 
-async def load_daily_for_atr_compute(
-    pool: asyncpg.Pool,
-    since: date,
-) -> list[dict]:
-    """
-    Every raw daily row on or after ``since``, ordered ready for pandas.
-
-    Returned dicts have keys ``symbolid, date, high, low, close``. The
-    historian groups these by symbolid, feeds each group into
-    ``compute_atr_series`` (High/Low/Close), and upserts the resulting
-    ATR into ``daily_indicators``. Retention already caps how much
-    history the caller reads.
-    """
+async def load_daily_for_atr_compute(pool: asyncpg.Pool,since: date) -> pd.DataFrame:
+    
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -83,16 +72,11 @@ async def load_daily_for_atr_compute(
             """,
             since,
         )
-    return [
-        {
-            "symbolid": r["symbolid"],
-            "date":     r["date"],
-            "high":     float(r["high"])  if r["high"]  is not None else None,
-            "low":      float(r["low"])   if r["low"]   is not None else None,
-            "close":    float(r["close"]) if r["close"] is not None else None,
-        }
-        for r in rows
-    ]
+
+    return pd.DataFrame(
+        rows,
+        columns=["symbolid", "date", "high", "low", "close"],
+    )
 
 
 async def load_livestream_bars_for_symbol(

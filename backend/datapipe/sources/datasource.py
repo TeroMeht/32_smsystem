@@ -20,56 +20,24 @@ next_url pagination is handled here so callers see a flat list.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional
 
-import aiohttp
 
-from backend.core.config import settings
 from backend.datapipe.schemas import BAR_MINUTES, RestAggregateBar, RestAggregateResponse
 from backend.datapipe.time_utils import date_to_iso
+from backend.dependencies import RestClient
+
 
 logger = logging.getLogger(__name__)
 
 
-class RestClient:
-    """
-    One-per-process aiohttp session wrapper. Instantiate at app startup and
-    hand around; ``close()`` from lifespan shutdown.
-    """
 
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        request_timeout_s: float = 30.0,
-    ):
-        self._api_key = api_key or settings.POLYGON_API_KEY
-        self._base_url = (base_url or settings.POLYGON_BASE_URL).rstrip("/")
-        self._session: Optional[aiohttp.ClientSession] = None
-        # A hard per-request timeout is critical -- without it a single
-        # slow/hung symbol can pin a worker slot forever (the historian's
-        # bounded semaphore then wedges the whole backfill).
-        self._timeout = aiohttp.ClientTimeout(total=request_timeout_s)
 
-    async def _get_session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=self._timeout)
-        return self._session
-
-    async def close(self) -> None:
-        if self._session and not self._session.closed:
-            await self._session.close()
-
-    # -----------------------------------------------------------------------
-    # aggregates
-    # -----------------------------------------------------------------------
-
-    async def _paged_get(self, url: str, params: dict) -> list[RestAggregateBar]:
+async def _paged_get(client: RestClient, url: str, params: dict) -> list[RestAggregateBar]:
         """
         GET url + follow next_url until exhausted. next_url comes back
         pre-formed and already carries the cursor -- we only need to add the
@@ -79,14 +47,14 @@ class RestClient:
         pagination loops, and slow endpoints. Rate-limit headers if present
         (X-RateLimit-*, Retry-After) are surfaced at INFO on any non-2xx.
         """
-        session = await self._get_session()
+        session = client.session
         out: list[RestAggregateBar] = []
         next_url: Optional[str] = None
         pages = 0
 
         while True:
             target = next_url or url
-            page_params = {"apiKey": self._api_key} if next_url else {**params, "apiKey": self._api_key}
+            page_params = {"apiKey": client.api_key} if next_url else {**params, "apiKey": client.api_key}
             safe_params = {k: v for k, v in page_params.items() if k != "apiKey"}
             logger.debug("[rest] --> GET %s params=%s (page=%d)", target, safe_params, pages + 1)
 
@@ -132,49 +100,51 @@ class RestClient:
             logger.info("[rest] %s completed after %d pages, %d rows", url, pages, len(out))
         return out
 
-    async def fetch_intraday_bars(
-        self,
-        symbol: str,
-        day: date,
-    ) -> list[RestAggregateBar]:
-        """
-        Intraday bars for one ET session date at the aggregation cadence
-        (BAR_MINUTES). ``from`` and ``to`` share the date so we don't
-        accidentally pull the neighbouring day. Massive treats these as
-        calendar days in ET.
-        """
-        url = (
-            f"{self._base_url}/v2/aggs/ticker/{symbol}"
-            f"/range/{BAR_MINUTES}/minute/{date_to_iso(day)}/{date_to_iso(day)}"
-        )
-        return await self._paged_get(url, {"adjusted": "true", "sort": "asc", "limit": 50000})
+async def fetch_intraday_bars(
+    client: RestClient,
+    symbol: str,
+    day: date,
+) -> list[RestAggregateBar]:
 
-    async def fetch_intraday_bars_range(
-        self,
-        symbol: str,
-        start_day: date,
-        end_day: date,
-    ) -> list[RestAggregateBar]:
-        """
-        Multi-day intraday history at the aggregation cadence (BAR_MINUTES).
-        Feeds the historian; Polygon returns the N-min aggregates directly,
-        so no client-side batch aggregation is needed on this path.
-        """
-        url = (
-            f"{self._base_url}/v2/aggs/ticker/{symbol}"
-            f"/range/{BAR_MINUTES}/minute/{date_to_iso(start_day)}/{date_to_iso(end_day)}"
-        )
-        return await self._paged_get(url, {"adjusted": "true", "sort": "asc", "limit": 50000})
 
-    async def fetch_daily_bars_range(
-        self,
-        symbol: str,
-        start_day: date,
-        end_day: date,
-    ) -> list[RestAggregateBar]:
-        """Daily bars in ``[start_day, end_day]`` -- feeds ATR14 in the historian."""
-        url = (
-            f"{self._base_url}/v2/aggs/ticker/{symbol}"
-            f"/range/1/day/{date_to_iso(start_day)}/{date_to_iso(end_day)}"
-        )
-        return await self._paged_get(url, {"adjusted": "true", "sort": "asc", "limit": 5000})
+    """
+    Intraday bars for one ET session date at the aggregation cadence
+    (BAR_MINUTES). ``from`` and ``to`` share the date so we don't
+    accidentally pull the neighbouring day. Massive treats these as
+    calendar days in ET.
+    """
+    url = (
+        f"{client.base_url}/v2/aggs/ticker/{symbol}"
+        f"/range/{BAR_MINUTES}/minute/{date_to_iso(day)}/{date_to_iso(day)}"
+    )
+    return await _paged_get(client,url, {"adjusted": "true", "sort": "asc", "limit": 50000})
+
+async def fetch_intraday_bars_range(
+    client: RestClient,
+    symbol: str,
+    start_day: date,
+    end_day: date,
+) -> list[RestAggregateBar]:
+    """
+    Multi-day intraday history at the aggregation cadence (BAR_MINUTES).
+    Feeds the historian; Polygon returns the N-min aggregates directly,
+    so no client-side batch aggregation is needed on this path.
+    """
+    url = (
+        f"{client.base_url}/v2/aggs/ticker/{symbol}"
+        f"/range/{BAR_MINUTES}/minute/{date_to_iso(start_day)}/{date_to_iso(end_day)}"
+    )
+    return await _paged_get(client, url, {"adjusted": "true", "sort": "asc", "limit": 50000})
+
+async def fetch_daily_bars_range(
+    client: RestClient,
+    symbol: str,
+    start_day: date,
+    end_day: date,
+) -> list[RestAggregateBar]:
+    """Daily bars in ``[start_day, end_day]`` -- feeds ATR14 in the historian."""
+    url = (
+        f"{client.base_url}/v2/aggs/ticker/{symbol}"
+        f"/range/1/day/{date_to_iso(start_day)}/{date_to_iso(end_day)}"
+    )
+    return await _paged_get(client, url, {"adjusted": "true", "sort": "asc", "limit": 5000})

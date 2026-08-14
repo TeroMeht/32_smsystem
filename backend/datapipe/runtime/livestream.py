@@ -19,7 +19,6 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 import asyncpg
@@ -31,12 +30,12 @@ from backend.database.readers import (
     load_rvol_baseline_for_symbol,
 )
 from backend.database.writers import bulk_insert_livestream_bars
-from backend.datapipe.calculations import enrich_bar
 from backend.datapipe.runtime.aggregation import BarAggregator
-from backend.datapipe.runtime.bar_processor import BarSink, process_bar
+from backend.datapipe.runtime.bar_processor import BarSink, process_bar,enrich_bar
 from backend.datapipe.schemas import AggregateMinuteMessage, Bar1m, MonitoredSymbols
 from backend.datapipe.runtime.session_state import SessionStore
-from backend.datapipe.sources.rest_client import RestClient
+from backend.dependencies import RestClient
+from backend.datapipe.sources.datasource import fetch_intraday_bars
 from backend.datapipe.time_utils import helsinki_time_slot, session_date_et, to_helsinki
 
 logger = logging.getLogger(__name__)
@@ -51,22 +50,6 @@ async def _initialize_livestream(
     symbol_map: MonitoredSymbols,
     concurrency: int = 10,
 ) -> None:
-    """
-    Bootstrap the livestream with today's already-occurred bars.
-
-    Runs EVERY startup, unconditionally, for EVERY monitored symbol -- so
-    any gaps left by a prior WS session (missed minutes, disconnects) get
-    filled by a fresh REST snapshot. Livestream is truncated first (by
-    pipeline) so we're writing into a clean table.
-
-    For each symbol we fetch today's bars via REST (already at
-    BAR_MINUTES cadence), walk them through ``enrich_bar`` in ts order,
-    and bulk-insert the enriched result. In-memory session state is
-    populated in the same pass so the WS consumer picks up from a correct
-    accumulator.
-
-    intraday_bars is NOT touched -- historian owns that table.
-    """
 
     today_et = session_date_et(datetime.now(timezone.utc))
 
@@ -89,7 +72,7 @@ async def _initialize_livestream(
 
     async def _fetch(sym: str, sid: int) -> tuple[str, int, list[Bar1m]]:
         async with sem:
-            raw = await rest.fetch_intraday_bars(sym, today_et)
+            raw = await fetch_intraday_bars(rest,sym, today_et)
             # Polygon returns bars at the aggregation cadence directly
             # (see rest_client.fetch_intraday_bars), so no client-side
             # aggregation is needed on this priming path.
@@ -133,22 +116,7 @@ async def _consume(
     symbol_map: MonitoredSymbols,
     sink: Optional[BarSink],
 ) -> None:
-    """
-    Drain frames from the socket. Massive sends arrays of events per frame;
-    we filter to ev=="AM" and dispatch each. Anything unparseable is logged
-    but never terminates the loop.
 
-    Aggregation: each 1-min bar is fed to a per-symbol ``BarAggregator``
-    which returns the completed N-min bar only when the window closes.
-    Enrichment + DB writes fire on the aggregate, never on the raw 1-min.
-
-    Signals of life:
-      * Emitted aggregates -- confirms subscription + aggregation for that
-        ticker.
-      * Ignored / dropped events -- warning level.
-
-    Full-fidelity raw-frame audit lives in logs/am_stream.log via am_logger.
-    """
     aggregators: dict[str, BarAggregator] = {}
 
     async for raw in ws:

@@ -22,9 +22,14 @@ from typing import Awaitable, Callable, Optional
 import asyncpg
 
 from backend.database.writers import insert_livestream_bar
-from backend.datapipe.calculations import enrich_bar
+from backend.datapipe.calculations import (
+    calculate_next_ema,
+    calculate_next_relatr,
+    calculate_next_rvol_cum,
+    calculate_next_vwap,
+)
 from backend.datapipe.schemas import Bar1m
-from backend.datapipe.runtime.session_state import SessionStore, SymbolSessionState
+from backend.datapipe.runtime.session_state import SessionStore
 from backend.datapipe.time_utils import helsinki_time_slot, session_date_et
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,49 @@ logger = logging.getLogger(__name__)
 
 # Callback signature: async fn taking the enriched Bar1m. Return value ignored.
 BarSink = Callable[[Bar1m], Awaitable[None]]
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# High-level enrichment -- glues the four indicators onto a Bar1m in one call
+# ---------------------------------------------------------------------------
+
+
+def enrich_bar(
+    new_bar: Bar1m,
+    history: list[Bar1m],
+    atr: Optional[float],
+    baseline_slot_avg: float = 0.0,
+    baseline_history_sum: float = 0.0,
+) -> Bar1m:
+    """
+    Populate all four indicator slots on ``new_bar`` and return it.
+
+    ``history`` is the list of session bars strictly BEFORE ``new_bar``, in
+    chronological order. Callers (livestream / replay) maintain a small
+    in-memory deque per symbol so this stays cheap.
+
+    ``baseline_slot_avg`` is the per-bar avg for THIS bar's ET slot.
+    ``baseline_history_sum`` is the running sum of per-bar baselines from
+    every prior bar this session -- so together they form the cumulative
+    denominator for RVOL. See ``next_rvol_cum`` for semantics.
+    """
+    vwap = calculate_next_vwap(new_bar, history)
+    new_bar.vwap = vwap
+    new_bar.ema9 = calculate_next_ema(new_bar, history)
+    new_bar.relatr = calculate_next_relatr(vwap, new_bar.close, atr)
+    hist_vol_sum = float(sum(b.volume for b in history))
+    new_bar.rvol_cum = calculate_next_rvol_cum(
+        new_bar.volume, hist_vol_sum, baseline_slot_avg, baseline_history_sum,
+    )
+    return new_bar
+
+
+
+
+
 
 
 async def process_bar(

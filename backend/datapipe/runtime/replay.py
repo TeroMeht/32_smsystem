@@ -42,11 +42,10 @@ from backend.database.readers import (
     load_rvol_baseline_for_symbol,
 )
 from backend.database.writers import bulk_insert_livestream_bars
-from backend.datapipe.calculations import enrich_bar
-from backend.datapipe.runtime.bar_processor import BarSink, process_bar
+from backend.datapipe.runtime.bar_processor import BarSink, process_bar,enrich_bar
 from backend.datapipe.schemas import Bar1m, MonitoredSymbols
 from backend.datapipe.runtime.session_state import SessionStore
-from backend.datapipe.sources.rest_client import RestClient  # kept for pipeline signature compat
+from backend.dependencies import RestClient
 from backend.datapipe.time_utils import helsinki_time_slot, to_helsinki
 
 logger = logging.getLogger(__name__)
@@ -54,19 +53,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ReplayConfig:
-    day: date            # ET session date to replay
-    speed: float         # 1.0 = wall clock, 60.0 = 1 real sec per replay minute, 0 = fastest
-    # Optional -- when set, splits the session at this UTC instant:
-    #   * bars STRICTLY BEFORE start_utc are treated as "already occurred"
-    #     -- enriched into per-symbol state AND written to livestream in
-    #     one bulk insert, exactly the way live's REST-prime works.
-    #   * bars at/after start_utc are consumed one-by-one at the requested
-    #     speed. VWAP/EMA/RVOL therefore see the FULL session context, and
-    #     the /relatr endpoint has data from the moment startup finishes.
+    day: date            
+    speed: float        
     start_utc: Optional[datetime] = None
-
-    # Baseline lookback / sample sessions come from ``settings`` (same
-    # values the historian uses), so replay and historian can't drift.
 
 
 # ---------------------------------------------------------------------------
