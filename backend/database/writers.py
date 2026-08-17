@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Iterable, Optional, Sequence
 
 import asyncpg
 
-from backend.datapipe.schemas import Bar1m, DailyBar
+from backend.datapipe.schemas import Bar, DailyBar
 from backend.datapipe.time_utils import to_helsinki
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ _INSERT_LIVESTREAM_SQL = """
 """
 
 
-async def insert_livestream_bar(pool: asyncpg.Pool, bar: Bar1m) -> None:
+async def insert_livestream_bar(pool: asyncpg.Pool, bar: Bar) -> None:
     """Upsert one enriched bar into livestream (indicators required)."""
     async with pool.acquire() as conn:
         await conn.execute(
@@ -65,7 +65,7 @@ async def insert_livestream_bar(pool: asyncpg.Pool, bar: Bar1m) -> None:
 
 async def bulk_insert_livestream_bars(
     pool: asyncpg.Pool,
-    bars: Sequence[Bar1m],
+    bars: Sequence[Bar],
 ) -> None:
     """
     Bulk-insert already-enriched bars into livestream. Used by the
@@ -162,7 +162,7 @@ async def empty_livestream_table(pool: asyncpg.Pool) -> None:
 
 async def bulk_insert_intraday_bars(
     pool: asyncpg.Pool,
-    bars: Sequence[Bar1m],
+    bars: Sequence[Bar],
 ) -> None:
     """
     Backfill/replay bulk insert into intraday_bars.
@@ -358,3 +358,55 @@ async def record_backfill_run(
             """,
             daily_last_run, intraday_last_run
         )
+
+
+# ---------------------------------------------------------------------------
+# rvol_baseline (full rebuild -- wipe + bulk insert)
+# ---------------------------------------------------------------------------
+
+
+async def bulk_replace_rvol_baseline(
+    pool: asyncpg.Pool,
+    rows: Sequence[tuple[int, time, float, int]],
+) -> None:
+    """
+    Wipe ``rvol_baseline`` and repopulate from ``rows``, atomically.
+
+    ``rows`` items are ``(symbolid, bar_time, avg_volume, sample_days)``
+    where ``bar_time`` is a naive ``datetime.time`` in Helsinki (Postgres
+    stores it as ``timetz`` -- the offset is stamped server-side under a
+    ``SET LOCAL TIME ZONE 'Europe/Helsinki'`` so the value reads back as
+    e.g. ``09:30:00+03``).
+
+    Called by ``datapipe.rvol_baseline.rebuild_rvol_model`` after
+    ``calculations.compute_rvol_baseline`` has produced the full grid.
+    """
+    if not rows:
+        return
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute("SET LOCAL TIME ZONE 'Europe/Helsinki';")
+            await conn.execute("DELETE FROM rvol_baseline;")
+            await conn.execute(
+                """
+                CREATE TEMP TABLE _stage_rvol (
+                    symbolid    integer,
+                    bar_time    time,
+                    avg_volume  numeric(16,2),
+                    sample_days smallint
+                ) ON COMMIT DROP;
+                """
+            )
+            await conn.copy_records_to_table(
+                "_stage_rvol",
+                records=rows,
+                columns=["symbolid", "bar_time", "avg_volume", "sample_days"],
+            )
+            await conn.execute(
+                """
+                INSERT INTO rvol_baseline
+                    (symbolid, bar_time, avg_volume, sample_days, updated)
+                SELECT symbolid, bar_time::timetz, avg_volume, sample_days, now()
+                  FROM _stage_rvol;
+                """
+            )

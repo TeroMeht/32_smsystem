@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 import pytest
 
-from backend.datapipe.calculations import (
+from backend.datapipe.calculations.calculations import (
     bars_to_frame,
     compute_atr_series,
     compute_ema_series,
@@ -25,11 +25,11 @@ from backend.datapipe.calculations import (
     next_rvol_cum,
     next_vwap,
 )
-from backend.datapipe.schemas import Bar1m
+from backend.datapipe.schemas import Bar
 
 
-def _mk_bar(i: int, o: float, h: float, l: float, c: float, v: int) -> Bar1m:
-    return Bar1m(
+def _mk_bar(i: int, o: float, h: float, l: float, c: float, v: int) -> Bar:
+    return Bar(
         symbol="TEST",
         symbolid=1,
         ts=datetime(2026, 8, 7, 13, 30, tzinfo=timezone.utc) + timedelta(minutes=i),
@@ -38,7 +38,7 @@ def _mk_bar(i: int, o: float, h: float, l: float, c: float, v: int) -> Bar1m:
 
 
 @pytest.fixture
-def session_bars() -> list[Bar1m]:
+def session_bars() -> list[Bar]:
     # 5 bars, monotonic close, varying volume
     specs = [
         (100.0, 100.5, 99.8, 100.3, 1000),

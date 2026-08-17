@@ -1,17 +1,15 @@
 """
-The single entrypoint that turns a raw incoming Bar1m into an enriched,
-persisted bar. Used by BOTH livestream.py and replay.py so behavior is
-identical between them.
+Persistence + fan-out wrapper around a single incoming Bar.
 
-Steps:
-  1. Look up or create the per-symbol SymbolSessionState.
-  2. Compute the Helsinki bar_time slot; grab that slot's rvol baseline
-     (per-bar average from the rvol_baseline table).
-  3. Enrich the bar with VWAP/EMA9/RelATR/RVOL cumulative.
-  4. Append the enriched bar to session history.
-  5. Persist to livestream.
-  6. Emit the enriched bar via an optional callback -- this is the hook the
-     service layer plugs into to run strategies + push SSE events.
+The per-bar state transition (compute indicators, append to history,
+advance running sums) lives on ``SymbolSessionState.apply_bar`` so both
+live and replay paths share identical enrichment. This module owns only
+the two boundaries the state doesn't touch: writing the enriched bar to
+the livestream table and firing the optional strategy/SSE sink.
+
+Used by:
+  * ``runtime.livestream._consume``      -- one bar per WS aggregate
+  * ``runtime.replay._consume``          -- one bar per intraday_bars row
 """
 
 from __future__ import annotations
@@ -22,94 +20,32 @@ from typing import Awaitable, Callable, Optional
 import asyncpg
 
 from backend.database.writers import insert_livestream_bar
-from backend.datapipe.calculations import (
-    calculate_next_ema,
-    calculate_next_relatr,
-    calculate_next_rvol_cum,
-    calculate_next_vwap,
-)
-from backend.datapipe.schemas import Bar1m
 from backend.datapipe.runtime.session_state import SessionStore
-from backend.datapipe.time_utils import helsinki_time_slot, session_date_et
+from backend.datapipe.schemas import Bar
 
 logger = logging.getLogger(__name__)
 
 
-# Callback signature: async fn taking the enriched Bar1m. Return value ignored.
-BarSink = Callable[[Bar1m], Awaitable[None]]
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# High-level enrichment -- glues the four indicators onto a Bar1m in one call
-# ---------------------------------------------------------------------------
-
-
-def enrich_bar(
-    new_bar: Bar1m,
-    history: list[Bar1m],
-    atr: Optional[float],
-    baseline_slot_avg: float = 0.0,
-    baseline_history_sum: float = 0.0,
-) -> Bar1m:
-    """
-    Populate all four indicator slots on ``new_bar`` and return it.
-
-    ``history`` is the list of session bars strictly BEFORE ``new_bar``, in
-    chronological order. Callers (livestream / replay) maintain a small
-    in-memory deque per symbol so this stays cheap.
-
-    ``baseline_slot_avg`` is the per-bar avg for THIS bar's ET slot.
-    ``baseline_history_sum`` is the running sum of per-bar baselines from
-    every prior bar this session -- so together they form the cumulative
-    denominator for RVOL. See ``next_rvol_cum`` for semantics.
-    """
-    vwap = calculate_next_vwap(new_bar, history)
-    new_bar.vwap = vwap
-    new_bar.ema9 = calculate_next_ema(new_bar, history)
-    new_bar.relatr = calculate_next_relatr(vwap, new_bar.close, atr)
-    hist_vol_sum = float(sum(b.volume for b in history))
-    new_bar.rvol_cum = calculate_next_rvol_cum(
-        new_bar.volume, hist_vol_sum, baseline_slot_avg, baseline_history_sum,
-    )
-    return new_bar
-
-
-
-
-
+# Callback signature: async fn taking the enriched Bar. Return value ignored.
+BarSink = Callable[[Bar], Awaitable[None]]
 
 
 async def process_bar(
     pool: asyncpg.Pool,
     store: SessionStore,
-    bar: Bar1m,
+    bar: Bar,
     sink: Optional[BarSink] = None,
-) -> Bar1m:
+) -> Bar:
     """
-    Enrich + persist one incoming bar. Returns the enriched Bar1m so
-    callers doing synchronous follow-up work (unit tests, replay) can see
-    the same object the sink saw.
+    Enrich ``bar`` via session state, persist to livestream, fire sink.
+
+    Returns the enriched Bar so callers doing synchronous follow-up
+    work (unit tests, replay) can inspect the same object the sink saw.
     """
-    st = store.get_or_init(bar.symbol, bar.symbolid, session_date_et(bar.ts))
-
-    slot = helsinki_time_slot(bar.ts)
-    slot_avg = st.baseline_for_slot(slot)
-
-    enriched = enrich_bar(
-        new_bar=bar,
-        history=st.history,
-        atr=st.atr,
-        baseline_slot_avg=slot_avg,
-        baseline_history_sum=st.baseline_history_sum,
-    )
+    st = store.get(bar.symbol)
+    enriched = st.apply_bar(bar)
 
     await insert_livestream_bar(pool, enriched)
-
-    st.history.append(enriched)
-    st.baseline_history_sum += slot_avg
 
     if sink is not None:
         try:

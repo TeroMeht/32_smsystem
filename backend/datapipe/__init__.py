@@ -7,7 +7,7 @@ Three entry points, one canonical bar shape:
   * livestream.run_livestream(...)   -- WS /stocks/AM consumer
   * replay.run_replay(...)           -- REST-driven step-through of a past day
 
-All three funnel bars through the same schemas.Bar1m dataclass and the
+All three funnel bars through the same schemas.Bar dataclass and the
 same calculations layer (calculations.py) before persisting via
 backend.database.writers. This keeps live and replay behaviorally identical.
 

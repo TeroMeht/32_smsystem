@@ -5,7 +5,7 @@ Kept separate from writers.py so the read/write contracts are easy to
 audit. Reads here are:
 
   * monitored symbol map    -- symbol -> symbolid, used to translate WS
-                               messages into Bar1m without a per-message
+                               messages into Bar without a per-message
                                DB round trip.
   * latest ATR per symbol   -- from the ``daily`` table; feeds RelATR.
   * session bars so far     -- read from ``livestream`` to warm up the
@@ -21,7 +21,7 @@ from typing import Iterable, Optional
 
 import asyncpg
 import pandas as pd
-from backend.datapipe.schemas import Bar1m, MonitoredSymbols
+from backend.datapipe.schemas import Bar, MonitoredSymbols
 from backend.datapipe.time_utils import HELSINKI
 
 
@@ -58,6 +58,32 @@ async def load_latest_atr_map(pool: asyncpg.Pool) -> dict[int, float]:
             """
         )
     return {r["symbolid"]: float(r["atr"]) for r in rows}
+
+
+async def load_intraday_bars_for_rvol(
+    pool: asyncpg.Pool,
+    start_utc: datetime,
+    end_utc: datetime,
+) -> list[dict]:
+    """
+    Raw intraday rows in ``[start_utc, end_utc)`` needed to rebuild
+    rvol_baseline. Only the columns the compute cares about:
+    ``symbolid``, ``ts`` (UTC), ``volume``. Kept as list-of-dicts so the
+    pure calculations layer never sees asyncpg types.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT symbolid, ts, volume
+              FROM intraday_bars
+             WHERE ts >= $1 AND ts < $2;
+            """,
+            start_utc, end_utc,
+        )
+    return [
+        {"symbolid": int(r["symbolid"]), "ts": r["ts"], "volume": int(r["volume"])}
+        for r in rows
+    ]
 
 
 async def load_daily_for_atr_compute(pool: asyncpg.Pool,since: date) -> pd.DataFrame:
@@ -128,7 +154,7 @@ async def load_intraday_bars_for_day(
     pool: asyncpg.Pool,
     day: date,
     symbolids: Iterable[int],
-) -> list[Bar1m]:
+) -> list[Bar]:
     """
     All ``intraday_bars`` rows for ``day`` (ET session date) whose
     ``symbolid`` is in ``symbolids``, joined to ``monitored_symbols`` for
@@ -161,7 +187,7 @@ async def load_intraday_bars_for_day(
             sids, day,
         )
     return [
-        Bar1m(
+        Bar(
             symbol=r["symbol"],
             symbolid=r["symbolid"],
             ts=r["ts"],
@@ -364,7 +390,7 @@ async def load_livestream_bars_for_symbol_today(
     pool: asyncpg.Pool,
     symbolid: int,
     today_et: date,
-) -> list[Bar1m]:
+) -> list[Bar]:
     """
     All livestream rows for ``symbolid`` whose ET session date is today,
     ordered by ts. Used to rehydrate ``st.history`` from what livestream
@@ -385,7 +411,7 @@ async def load_livestream_bars_for_symbol_today(
             symbolid, today_et,
         )
     return [
-        Bar1m(
+        Bar(
             symbol=r["symbol"],
             symbolid=r["symbolid"],
             ts=r["ts"],

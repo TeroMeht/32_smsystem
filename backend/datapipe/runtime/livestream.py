@@ -18,29 +18,54 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 import asyncpg
 import websockets
 
 from backend.core.config import settings
-from backend.database.readers import (
-    load_latest_atr_map,
-    load_rvol_baseline_for_symbol,
-)
-from backend.database.writers import bulk_insert_livestream_bars
 from backend.datapipe.runtime.aggregation import BarAggregator
-from backend.datapipe.runtime.bar_processor import BarSink, process_bar,enrich_bar
-from backend.datapipe.schemas import AggregateMinuteMessage, Bar1m, MonitoredSymbols
+from backend.datapipe.runtime.bar_processor import BarSink, process_bar
+from backend.datapipe.runtime.priming import (
+    enrich_and_bulk_persist,
+    seed_session_state,
+)
 from backend.datapipe.runtime.session_state import SessionStore
-from backend.dependencies import RestClient
+from backend.datapipe.schemas import AggregateMinuteMessage, Bar, MonitoredSymbols
 from backend.datapipe.sources.datasource import fetch_intraday_bars
-from backend.datapipe.time_utils import helsinki_time_slot, session_date_et, to_helsinki
+from backend.datapipe.time_utils import session_date_et, to_helsinki
+from backend.dependencies import RestClient
 
 logger = logging.getLogger(__name__)
 
 
+
+
+async def _rest_prime_bars(
+    rest: RestClient,
+    symbol_map: MonitoredSymbols,
+    day: date,
+    concurrency: int,
+) -> list[tuple[str, int, list[Bar]]]:
+    """
+    REST-fetch today's already-occurred bars for every active symbol
+    with bounded parallelism. Returns ``(sym, sid, [bars])`` tuples in
+    the shape ``enrich_and_bulk_persist`` expects.
+
+    Polygon serves bars at the aggregation cadence server-side
+    (BAR_MINUTES/minute); no client aggregation is needed here.
+    """
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _fetch(sym: str, sid: int) -> tuple[str, int, list[Bar]]:
+        async with sem:
+            raw = await fetch_intraday_bars(rest, sym, day)
+            return sym, sid, [b.to_bar(symbol=sym, symbolid=sid) for b in raw]
+
+    return await asyncio.gather(*[
+        _fetch(sym, sid) for sym, sid in symbol_map.items()
+    ])
 
 
 async def _initialize_livestream(
@@ -50,63 +75,42 @@ async def _initialize_livestream(
     symbol_map: MonitoredSymbols,
     concurrency: int = 10,
 ) -> None:
-
+    """
+    Compose the three startup steps:
+      1. Seed per-symbol state (ATR + rvol baseline) from the DB.
+      2. REST-fetch today's already-occurred bars.
+      3. Enrich them via ``apply_bar`` and bulk-insert into livestream.
+    """
     today_et = session_date_et(datetime.now(timezone.utc))
-
-    # ATR + baseline: cheap per-symbol reads, needed before enrichment.
-    atr_map = await load_latest_atr_map(pool)
-    missing_atr = 0
-    missing_baseline = 0
-    for sym, sid in symbol_map.items():
-        baseline = await load_rvol_baseline_for_symbol(pool, sid)
-        st = store.get_or_init(sym, sid, today_et)
-        st.atr = atr_map.get(sid)
-        st.rvol_baseline = baseline
-        if st.atr is None:
-            missing_atr += 1
-        if not baseline:
-            missing_baseline += 1
-
-    # REST fetch today's bars per symbol, bounded parallelism.
-    sem = asyncio.Semaphore(concurrency)
-
-    async def _fetch(sym: str, sid: int) -> tuple[str, int, list[Bar1m]]:
-        async with sem:
-            raw = await fetch_intraday_bars(rest,sym, today_et)
-            # Polygon returns bars at the aggregation cadence directly
-            # (see rest_client.fetch_intraday_bars), so no client-side
-            # aggregation is needed on this priming path.
-            return sym, sid, [b.to_bar1m(symbol=sym, symbolid=sid) for b in raw]
-
-    fetch_results = await asyncio.gather(*[
-        _fetch(sym, sid) for sym, sid in symbol_map.items()
-    ])
+    await seed_session_state(pool, store, symbol_map, today_et)
+    fetched = await _rest_prime_bars(rest, symbol_map, today_et, concurrency)
+    await enrich_and_bulk_persist(pool, store, fetched)
 
 
-    # Enrich each symbol's bars in ts order (bars come sorted by REST) and
-    # accumulate into memory state. All enriched bars get bulk-inserted.
-    all_enriched: list[Bar1m] = []
-    for sym, sid, bars in fetch_results:
-        if not bars:
-            continue
-        st = store.get_or_init(sym, sid, today_et)
-        for bar in bars:
-            slot = helsinki_time_slot(bar.ts)
-            slot_avg = st.baseline_for_slot(slot)
-            enriched = enrich_bar(
-                new_bar=bar,
-                history=st.history,
-                atr=st.atr,
-                baseline_slot_avg=slot_avg,
-                baseline_history_sum=st.baseline_history_sum,
-            )
-            st.history.append(enriched)
-            st.baseline_history_sum += slot_avg
-            all_enriched.append(enriched)
 
-    if all_enriched:
-        await bulk_insert_livestream_bars(pool, all_enriched)
+def _parse_am_event(ev: dict, symbol_map: MonitoredSymbols) -> Optional[Bar]:
+    """
+    Filter to ``ev == "AM"``, validate the payload, resolve the symbolid,
+    return the canonical raw ``Bar``. Anything else returns ``None``.
 
+    Polygon sends non-AM control frames on the same stream:
+      * ``{"ev":"status","status":"auth_success",...}`` after auth
+      * ``{"ev":"status","status":"success","message":"subscribed to: AM.<sym>"}``
+        per subscribed symbol (so 1700+ of these right after subscribe)
+    These are handshake noise, not data -- log at DEBUG and skip.
+    """
+    if ev.get("ev") != "AM":
+        logger.debug("control frame: %s", ev)
+        return None
+    try:
+        msg = AggregateMinuteMessage.model_validate(ev)
+    except Exception:
+        logger.warning("AM validation failed: %s", ev)
+        return None
+    sid = symbol_map.get(msg.sym)
+    if sid is None:
+        return None
+    return msg.to_bar(symbolid=sid)
 
 
 async def _consume(
@@ -116,7 +120,11 @@ async def _consume(
     symbol_map: MonitoredSymbols,
     sink: Optional[BarSink],
 ) -> None:
-
+    """
+    Drain frames from the socket. Each raw 1-min AM bar is aggregated
+    per symbol; the enriched N-min bar is enriched, persisted, and logged
+    once the window closes.
+    """
     aggregators: dict[str, BarAggregator] = {}
 
     async for raw in ws:
@@ -130,32 +138,15 @@ async def _consume(
         for ev in events:
             if not isinstance(ev, dict):
                 continue
-            ev_type = ev.get("ev")
 
-            # Polygon sends non-AM control frames on the same stream:
-            #   * one {"ev":"status","status":"auth_success",...} after auth
-            #   * one {"ev":"status","status":"success","message":"subscribed to: AM.<sym>"}
-            #     per subscribed symbol (so 1700+ of these right after subscribe)
-            # These are handshake noise, not data -- log at DEBUG and skip.
-            if ev_type != "AM":
-                logger.debug("control frame: %s", ev)
+            raw_bar = _parse_am_event(ev, symbol_map)
+            if raw_bar is None:
                 continue
 
-            try:
-                msg = AggregateMinuteMessage.model_validate(ev)
-            except Exception:
-                logger.warning("AM validation failed: %s", ev)
-                continue
-
-            sid = symbol_map.get(msg.sym)
-            if sid is None:
-                continue
-
-            raw_bar: Bar1m = msg.to_bar1m(symbolid=sid)
-            agg = aggregators.setdefault(msg.sym, BarAggregator())
+            agg = aggregators.setdefault(raw_bar.symbol, BarAggregator())
             bar = agg.feed(raw_bar)
             if bar is None:
-                # Window not yet closed -- wait for the next 1-min bar.
+                # Window still filling -- wait for the next 1-min bar.
                 continue
 
             try:
@@ -176,16 +167,7 @@ async def run_livestream(
     symbol_map: MonitoredSymbols,
     sink: Optional[BarSink] = None,
 ) -> None:
-    """
-    Fetch today's already-occurred bars via REST + enrich + write to
-    livestream, then open the WS and extend it minute by minute.
 
-    Caller (pipeline.startup) supplies ``symbol_map`` -- already validated
-    non-empty there, so we don't re-check.
-
-    intraday_bars is not touched by this path -- historian owns it.
-    NO reconnect: any failure propagates to the caller.
-    """
     store = SessionStore()
     url = settings.POLYGON_WS_URL
 

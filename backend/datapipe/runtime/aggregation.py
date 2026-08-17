@@ -26,13 +26,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from backend.datapipe.schemas import BAR_MINUTES, Bar1m
+from backend.datapipe.schemas import BAR_MINUTES, Bar
 
 
 _BUCKET_SECONDS = BAR_MINUTES * 60
 
 
-def _bucket_of(bar: Bar1m) -> int:
+def _bucket_of(bar: Bar) -> int:
     """Integer bucket ID = epoch-seconds floor-divided by window length."""
     return int(bar.ts.timestamp()) // _BUCKET_SECONDS
 
@@ -42,10 +42,10 @@ def _bucket_start_ts(bucket_id: int) -> datetime:
     return datetime.fromtimestamp(bucket_id * _BUCKET_SECONDS, tz=timezone.utc)
 
 
-def _merge(bars: list[Bar1m]) -> Bar1m:
-    """Fold a full window of 1-min bars into one aggregated Bar1m."""
+def _merge(bars: list[Bar]) -> Bar:
+    """Fold a full window of 1-min bars into one aggregated Bar."""
     first = bars[0]
-    return Bar1m(
+    return Bar(
         symbol   = first.symbol,
         symbolid = first.symbolid,
         ts       = _bucket_start_ts(_bucket_of(first)),
@@ -73,9 +73,9 @@ class BarAggregator:
 
     def __init__(self) -> None:
         self._bucket: Optional[int] = None
-        self._buf: list[Bar1m] = []
+        self._buf: list[Bar] = []
 
-    def feed(self, bar: Bar1m) -> Optional[Bar1m]:
+    def feed(self, bar: Bar) -> Optional[Bar]:
         b = _bucket_of(bar)
         if self._bucket is None or b != self._bucket:
             # New bucket. Drop any partial window we had; start a fresh one.

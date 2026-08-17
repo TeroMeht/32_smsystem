@@ -109,14 +109,13 @@ async def startup(
             speed=settings.REPLAY_SPEED,
             start_utc=start_utc,
         )
-        app.state.live_task = asyncio.create_task(
-            run_replay(pool, rest, cfg, symbol_map, sink=sink),
-        )
+        app.state.live_task = asyncio.create_task(run_replay(pool, rest, cfg, symbol_map, sink=sink))
+
         logger.info("Replay startup complete")
+        
     else:
-        app.state.live_task = asyncio.create_task(
-            run_livestream(pool, rest, symbol_map, sink=sink),
-        )
+        app.state.live_task = asyncio.create_task(run_livestream(pool, rest, symbol_map, sink=sink))
+
         logger.info("Live market data startup complete")
 
 

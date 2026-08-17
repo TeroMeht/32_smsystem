@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from backend.datapipe.schemas import Bar1m
+from backend.datapipe.schemas import Bar
 
 
 # ---------------------------------------------------------------------------
@@ -11,7 +11,7 @@ from backend.datapipe.schemas import Bar1m
 # ---------------------------------------------------------------------------
 
 
-def calculate_next_vwap(new_bar: Bar1m, history: list[Bar1m]) -> float:
+def calculate_next_vwap(new_bar: Bar, history: list[Bar]) -> float:
     """
     Session-VWAP for one incoming bar given the prior session bars.
 
@@ -36,7 +36,7 @@ def calculate_next_vwap(new_bar: Bar1m, history: list[Bar1m]) -> float:
 # ---------------------------------------------------------------------------
 
 
-def calculate_next_ema(new_bar: Bar1m, history: list[Bar1m], period: int = 9) -> float:
+def calculate_next_ema(new_bar: Bar, history: list[Bar], period: int = 9) -> float:
     """
     EMA9 for one incoming bar. Uses pandas' ewm on the concatenated close
     series so the result is identical to compute_ema_series on the full
@@ -105,6 +105,8 @@ def calculate_next_rvol_cum(new_bar_volume: int, history_volume_sum: float, base
         return 0.0
     rvol_cum = round(cum_vol_today / cum_baseline, rounding)
     return rvol_cum
+
+
 
 
 

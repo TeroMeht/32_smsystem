@@ -36,17 +36,16 @@ from typing import Optional
 
 import asyncpg
 
-from backend.database.readers import (
-    load_intraday_bars_for_day,
-    load_latest_atr_map,
-    load_rvol_baseline_for_symbol,
+from backend.database.readers import load_intraday_bars_for_day
+from backend.datapipe.runtime.bar_processor import BarSink, process_bar
+from backend.datapipe.runtime.priming import (
+    enrich_and_bulk_persist,
+    seed_session_state,
 )
-from backend.database.writers import bulk_insert_livestream_bars
-from backend.datapipe.runtime.bar_processor import BarSink, process_bar,enrich_bar
-from backend.datapipe.schemas import Bar1m, MonitoredSymbols
 from backend.datapipe.runtime.session_state import SessionStore
+from backend.datapipe.schemas import Bar, MonitoredSymbols
+from backend.datapipe.time_utils import to_helsinki
 from backend.dependencies import RestClient
-from backend.datapipe.time_utils import helsinki_time_slot, to_helsinki
 
 logger = logging.getLogger(__name__)
 
@@ -63,70 +62,14 @@ class ReplayConfig:
 # ---------------------------------------------------------------------------
 
 
-async def _initialize_state_from_db(
-    pool: asyncpg.Pool,
-    store: SessionStore,
-    cfg: ReplayConfig,
-    symbol_map: MonitoredSymbols,
-) -> None:
-    """Load ATR + rvol_baseline into per-symbol state before we feed bars."""
-    atr_map = await load_latest_atr_map(pool)
-    missing_atr = 0
-    missing_baseline = 0
-    for sym, sid in symbol_map.items():
-        baseline = await load_rvol_baseline_for_symbol(pool, sid)
-        st = store.get_or_init(sym, sid, cfg.day)
-        st.atr = atr_map.get(sid)
-        st.rvol_baseline = baseline
-        if st.atr is None:
-            missing_atr += 1
-        if not baseline:
-            missing_baseline += 1
-    logger.info(
-        "state initialized -- %d symbols missing ATR, %d missing rvol baseline",
-        missing_atr, missing_baseline,
-    )
-
-
-async def _initialize_livestream_from_prefix(
-    pool: asyncpg.Pool,
-    store: SessionStore,
-    prefix: list[Bar1m],
-    session_date: date,
-) -> None:
-    """
-    Enrich pre-cutoff bars in ts order, append to per-symbol session
-    state, and bulk-insert the enriched result into ``livestream``.
-
-    Mirrors ``livestream._initialize_livestream`` semantics -- the only
-    difference is the source (rows already on disk in ``intraday_bars``
-    instead of a REST fetch). Result: /relatr sees a fully-populated
-    livestream table the instant startup finishes, and per-symbol VWAP /
-    EMA / RVOL accumulators are seeded with the whole session so far.
-    """
-    if not prefix:
-        return
-    all_enriched: list[Bar1m] = []
+def _group_prefix_by_symbol(
+    prefix: list[Bar],
+) -> list[tuple[str, int, list[Bar]]]:
+    """Reshape the flat prefix into what ``enrich_and_bulk_persist`` expects."""
+    by_sym: dict[tuple[str, int], list[Bar]] = {}
     for bar in prefix:
-        st = store.get_or_init(bar.symbol, bar.symbolid, session_date)
-        slot = helsinki_time_slot(bar.ts)
-        slot_avg = st.baseline_for_slot(slot)
-        enriched = enrich_bar(
-            new_bar=bar,
-            history=st.history,
-            atr=st.atr,
-            baseline_slot_avg=slot_avg,
-            baseline_history_sum=st.baseline_history_sum,
-        )
-        st.history.append(enriched)
-        st.baseline_history_sum += slot_avg
-        all_enriched.append(enriched)
-
-    await bulk_insert_livestream_bars(pool, all_enriched)
-    logger.info(
-        "Primed livestream with %d prefix bars (session=%s)",
-        len(all_enriched), session_date.isoformat(),
-    )
+        by_sym.setdefault((bar.symbol, bar.symbolid), []).append(bar)
+    return [(sym, sid, bars) for (sym, sid), bars in by_sym.items()]
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +144,7 @@ async def run_replay(
     logger.info("Replay started day= %s speed= %.2f", cfg.day, cfg.speed)
 
     try:
-        await _initialize_state_from_db(pool, store, cfg, symbol_map)
+        await seed_session_state(pool, store, symbol_map, cfg.day)
 
         timeline = await load_intraday_bars_for_day(pool, cfg.day, symbol_map.values())
         if not timeline:
@@ -216,7 +159,12 @@ async def run_replay(
         else:
             prefix, tail = [], timeline
 
-        await _initialize_livestream_from_prefix(pool, store, prefix, cfg.day)
+        if prefix:
+            written = await enrich_and_bulk_persist(
+                pool, store, _group_prefix_by_symbol(prefix),
+            )
+            logger.info("Primed livestream with %d prefix bars (session=%s)",
+                        written, cfg.day.isoformat())
 
         if not tail:
             logger.warning(

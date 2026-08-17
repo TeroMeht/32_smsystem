@@ -9,13 +9,13 @@ Three shapes to be aware of:
   * ``RestAggregateBar``        -- one entry of ``results[]`` from the REST
                                     /v2/aggs/... endpoint. Same short keys
                                     (t, o, h, l, c, v, vw, n).
-  * ``Bar1m``                   -- the *canonical* bar the rest of the
+  * ``Bar``                   -- the *canonical* bar the rest of the
                                     system consumes. Explicit field names,
                                     tz-aware UTC timestamp, symbolid resolved.
 
-Adapters (``AggregateMinuteMessage.to_bar1m`` / ``RestAggregateBar.to_bar1m``)
+Adapters (``AggregateMinuteMessage.to_bar`` / ``RestAggregateBar.to_bar``)
 turn the raw shapes into the canonical shape. Everything downstream of the
-adapter is Bar1m only -- calculations, DB writer, and strategies never touch
+adapter is Bar only -- calculations, DB writer, and strategies never touch
 the raw API dicts.
 """
 
@@ -43,7 +43,7 @@ BAR_MINUTES = 2
 # ---------------------------------------------------------------------------
 
 
-class Bar1m(BaseModel):
+class Bar(BaseModel):
     """
     A validated 1-min OHLCV bar with indicator slots.
 
@@ -100,9 +100,9 @@ class AggregateMinuteMessage(BaseModel):
     z: Optional[int] = None
     otc: Optional[bool] = None
 
-    def to_bar1m(self, symbolid: int) -> Bar1m:
+    def to_bar(self, symbolid: int) -> Bar:
         """Convert to canonical bar. Requires symbolid resolved by caller."""
-        return Bar1m(
+        return Bar(
             symbol=self.sym,
             symbolid=symbolid,
             ts=datetime.fromtimestamp(self.s / 1000, tz=timezone.utc),
@@ -133,8 +133,8 @@ class RestAggregateBar(BaseModel):
     vw: Optional[float] = None
     n: Optional[int] = None
 
-    def to_bar1m(self, symbol: str, symbolid: int) -> Bar1m:
-        return Bar1m(
+    def to_bar(self, symbol: str, symbolid: int) -> Bar:
+        return Bar(
             symbol=symbol,
             symbolid=symbolid,
             ts=datetime.fromtimestamp(self.t / 1000, tz=timezone.utc),

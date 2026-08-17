@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from backend.datapipe.runtime.bar_processor import process_bar
-from backend.datapipe.schemas import Bar1m
+from backend.datapipe.schemas import Bar
 from backend.datapipe.runtime.session_state import SessionStore
 
 
@@ -37,8 +37,8 @@ class _StubPool:
         return _StubAcquire()
 
 
-def _bar(minute: int, close: float, vol: int) -> Bar1m:
-    return Bar1m(
+def _bar(minute: int, close: float, vol: int) -> Bar:
+    return Bar(
         symbol="AAPL",
         symbolid=1,
         ts=datetime(2026, 8, 7, 13, 30, tzinfo=timezone.utc) + timedelta(minutes=minute),
