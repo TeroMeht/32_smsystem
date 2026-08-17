@@ -15,7 +15,12 @@ Only the endpoints the datapipe needs are wrapped:
 Intraday cadence is delegated to Polygon (we request ``/range/N/minute/...``
 directly with N = BAR_MINUTES), so callers get already-aggregated bars and
 no client-side aggregation is required on the historian or REST-prime paths.
-next_url pagination is handled here so callers see a flat list.
+
+Fetch functions own their URL + params, hand them to ``_get_bars`` for the
+actual HTTP round-trip, then deliver the bars back to their caller. ``limit``
+is sized above the worst-case row count for each window, so a single
+request returns everything; if Polygon ever hands back a ``next_url``,
+``_get_bars`` raises loudly rather than silently truncating.
 """
 
 from __future__ import annotations
@@ -24,7 +29,6 @@ import json
 import logging
 import time
 from datetime import date
-from typing import Optional
 
 
 from backend.datapipe.schemas import BAR_MINUTES, RestAggregateBar, RestAggregateResponse
@@ -35,78 +39,63 @@ from backend.dependencies import RestClient
 logger = logging.getLogger(__name__)
 
 
+async def _get_bars(client: RestClient, url: str, params: dict) -> list[RestAggregateBar]:
+    """
+    One GET against a Polygon aggregates endpoint. Parses the response
+    as ``RestAggregateResponse`` and returns the flat bar list.
 
+    Fails loud (RuntimeError) if the response carries a ``next_url`` --
+    callers' ``limit`` is sized to hold the whole window, so pagination
+    should never fire; if it does, bump the limit rather than silently
+    returning a partial page.
 
-async def _paged_get(client: RestClient, url: str, params: dict) -> list[RestAggregateBar]:
-        """
-        GET url + follow next_url until exhausted. next_url comes back
-        pre-formed and already carries the cursor -- we only need to add the
-        apiKey each hop.
+    Logs elapsed time, byte count, and any rate-limit headers so slow
+    calls / 429s are visible to operators.
+    """
+    page_params = {**params, "apiKey": client.api_key}
 
-        Logs every request/response so operators can diagnose rate limits,
-        pagination loops, and slow endpoints. Rate-limit headers if present
-        (X-RateLimit-*, Retry-After) are surfaced at INFO on any non-2xx.
-        """
-        session = client.session
-        out: list[RestAggregateBar] = []
-        next_url: Optional[str] = None
-        pages = 0
+    t0 = time.monotonic()
+    async with client.session.get(url, params=page_params) as resp:
+        body_bytes = await resp.read()
+        elapsed = time.monotonic() - t0
 
-        while True:
-            target = next_url or url
-            page_params = {"apiKey": client.api_key} if next_url else {**params, "apiKey": client.api_key}
-            safe_params = {k: v for k, v in page_params.items() if k != "apiKey"}
-            logger.debug("[rest] --> GET %s params=%s (page=%d)", target, safe_params, pages + 1)
+        # Rate-limit headers vary by provider; log whichever are present.
+        rl_hdrs = {
+            k: v for k, v in resp.headers.items()
+            if k.lower().startswith("x-ratelimit") or k.lower() == "retry-after"
+        }
 
-            t0 = time.monotonic()
-            async with session.get(target, params=page_params) as resp:
-                body_bytes = await resp.read()
-                elapsed = time.monotonic() - t0
+        if resp.status >= 400:
+            logger.warning(
+                "[rest] <-- %d %s (%.2fs, %d bytes) headers=%s body=%s",
+                resp.status, url, elapsed, len(body_bytes),
+                rl_hdrs, body_bytes[:400].decode("utf-8", errors="replace"),
+            )
+            resp.raise_for_status()
 
-                # Rate-limit headers vary by provider; log whichever are present
-                rl_hdrs = {
-                    k: v for k, v in resp.headers.items()
-                    if k.lower().startswith("x-ratelimit") or k.lower() == "retry-after"
-                }
+        logger.debug(
+            "[rest] <-- %d %s (%.2fs, %d bytes) headers=%s",
+            resp.status, url, elapsed, len(body_bytes), rl_hdrs,
+        )
+        if rl_hdrs:
+            logger.info("[rest] rate-limit headers on %s: %s", url, rl_hdrs)
 
-                if resp.status >= 400:
-                    logger.warning(
-                        "[rest] <-- %d %s (%.2fs, %d bytes) headers=%s body=%s",
-                        resp.status, target, elapsed, len(body_bytes),
-                        rl_hdrs, body_bytes[:400].decode("utf-8", errors="replace"),
-                    )
-                    resp.raise_for_status()
-                else:
-                    logger.debug(
-                        "[rest] <-- %d %s (%.2fs, %d bytes) headers=%s",
-                        resp.status, target, elapsed, len(body_bytes), rl_hdrs,
-                    )
-                    if rl_hdrs:
-                        logger.info("[rest] rate-limit headers on %s: %s", target, rl_hdrs)
+        data = json.loads(body_bytes)
 
-                data = json.loads(body_bytes)
+    parsed = RestAggregateResponse.model_validate(data)
+    if parsed.next_url:
+        raise RuntimeError(
+            f"[rest] {url} returned next_url -- request exceeded 'limit'. "
+            f"Bump the limit or shrink the window."
+        )
+    return parsed.results
 
-            parsed = RestAggregateResponse.model_validate(data)
-            out.extend(parsed.results)
-            pages += 1
-            if pages > 20:
-                logger.error("[rest] pagination cutoff at page 20 for %s -- aborting", url)
-                break
-            if not parsed.next_url:
-                break
-            next_url = parsed.next_url
-
-        if pages > 1:
-            logger.info("[rest] %s completed after %d pages, %d rows", url, pages, len(out))
-        return out
 
 async def fetch_intraday_bars(
     client: RestClient,
     symbol: str,
     day: date,
 ) -> list[RestAggregateBar]:
-
-
     """
     Intraday bars for one ET session date at the aggregation cadence
     (BAR_MINUTES). ``from`` and ``to`` share the date so we don't
@@ -117,7 +106,10 @@ async def fetch_intraday_bars(
         f"{client.base_url}/v2/aggs/ticker/{symbol}"
         f"/range/{BAR_MINUTES}/minute/{date_to_iso(day)}/{date_to_iso(day)}"
     )
-    return await _paged_get(client,url, {"adjusted": "true", "sort": "asc", "limit": 50000})
+    params = {"adjusted": "true", "sort": "asc", "limit": 50000}
+    bars = await _get_bars(client, url, params)
+    return bars
+
 
 async def fetch_intraday_bars_range(
     client: RestClient,
@@ -134,7 +126,10 @@ async def fetch_intraday_bars_range(
         f"{client.base_url}/v2/aggs/ticker/{symbol}"
         f"/range/{BAR_MINUTES}/minute/{date_to_iso(start_day)}/{date_to_iso(end_day)}"
     )
-    return await _paged_get(client, url, {"adjusted": "true", "sort": "asc", "limit": 50000})
+    params = {"adjusted": "true", "sort": "asc", "limit": 50000}
+    bars = await _get_bars(client, url, params)
+    return bars
+
 
 async def fetch_daily_bars_range(
     client: RestClient,
@@ -147,4 +142,6 @@ async def fetch_daily_bars_range(
         f"{client.base_url}/v2/aggs/ticker/{symbol}"
         f"/range/1/day/{date_to_iso(start_day)}/{date_to_iso(end_day)}"
     )
-    return await _paged_get(client, url, {"adjusted": "true", "sort": "asc", "limit": 5000})
+    params = {"adjusted": "true", "sort": "asc", "limit": 5000}
+    bars = await _get_bars(client, url, params)
+    return bars

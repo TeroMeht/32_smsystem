@@ -4,12 +4,15 @@ FastAPI entrypoint and composition root.
 This file is the ONLY place where long-lived infra resources are created
 and destroyed:
 
-  * DB pool     -- init_pool() / close_pool() from backend.dependencies
-  * REST client -- RestClient() / .close()
+  * DB pool     -- create_db_pool()   / pool.close()
+  * REST client -- create_rest_client() / rest.session.close()
 
-Both are stashed on ``app.state`` so any route or task can reach them
-without module-level globals, and both are torn down in the lifespan's
-``finally`` block regardless of whether startup succeeded.
+Both are stashed on ``app.state`` so any route can reach them via the
+``get_pool`` / ``get_rest`` ``Depends`` helpers in
+``backend.dependencies``. Nothing lives at module scope -- the
+lifespan's locals are the single source of truth, and both resources
+are torn down in the lifespan's ``finally`` block regardless of whether
+startup succeeded.
 
 The datapipe is pure orchestration -- ``pipeline.startup(app, pool, rest)``
 receives the infra as arguments and only owns the background livestream/
@@ -35,12 +38,7 @@ from starlette.responses import Response
 
 from backend.common.logging_config import setup_app_logging
 from backend.datapipe import pipeline
-from backend.dependencies import (
-    close_db_pool,
-    close_rest_client,
-    init_db_pool,
-    init_rest_client,
-)
+from backend.dependencies import create_db_pool, create_rest_client
 from backend.routers import livestream as livestream_routes
 from backend.routers import pages as pages_routes
 
@@ -64,12 +62,13 @@ async def lifespan(app: FastAPI):
     logger.info("32_smsystem starting up")
     logger.info("=" * 72)
 
-    # Infra lifecycle (pool + REST client) is owned entirely here via the
-    # singletons in backend.dependencies. Created BEFORE pipeline.startup
-    # so business logic sees them ready; torn down in ``finally``
-    # regardless of startup success.
-    pool = await init_db_pool()
-    rest = await init_rest_client()
+    # Infra lifecycle (pool + REST client) is owned entirely here. The
+    # factories in backend.dependencies just build the object; we own
+    # the local variable and close it in ``finally``. ``app.state`` is
+    # the sharing surface for route handlers -- the datapipe still
+    # receives explicit parameters.
+    pool = await create_db_pool()
+    rest = await create_rest_client()
     app.state.pool = pool
     app.state.rest = rest
 
@@ -79,8 +78,9 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("32_smsystem shutting down")
         await pipeline.shutdown(app)   # cancels the background task only
-        await close_rest_client()
-        await close_db_pool()
+        if not rest.session.closed:
+            await rest.session.close()
+        await pool.close()
         logger.info("32_smsystem shutdown complete")
 
 

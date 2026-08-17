@@ -1,17 +1,19 @@
 """
 Startup priming helpers shared by live + replay.
 
-Two orthogonal steps live here so both runtime paths can compose them:
+Three orthogonal steps live here so both runtime paths can compose them:
 
-  * ``seed_session_state``    -- pull ATR (daily_indicators) and rvol
-                                 baselines (rvol_baseline) from the DB and
-                                 hydrate the in-memory SessionStore.
-  * ``enrich_and_bulk_persist`` -- walk a list of raw bars through
-                                   ``st.apply_bar`` in ts order, batching
-                                   the enriched result into livestream.
+  * ``seed_session_state``  -- pull ATR (daily_indicators) and rvol
+                               baselines (rvol_baseline) from the DB and
+                               hydrate the in-memory SessionStore.
+  * ``enrich_prime_bars``   -- walk a list of raw bars through
+                               ``st.apply_bar`` in ts order; pure state
+                               work, no DB.
+  * ``bulk_persist_bars``   -- bulk-insert an enriched batch into the
+                               ``livestream`` table.
 
-Neither function knows where its inputs came from -- REST prime (live)
-or intraday_bars (replay) is the caller's concern.
+Neither enrich nor persist knows where its inputs came from -- REST
+prime (live) or intraday_bars (replay) is the caller's concern.
 """
 
 from __future__ import annotations
@@ -67,18 +69,16 @@ async def seed_session_state(
             )
 
 
-async def enrich_and_bulk_persist(
-    pool: asyncpg.Pool,
+def enrich_prime_bars(
     store: SessionStore,
     bars_by_symbol: Iterable[tuple[str, int, list[Bar]]],
-) -> int:
+) -> list[Bar]:
     """
-    Walk each symbol's bars through ``st.apply_bar`` in ts order,
-    accumulating enriched results, then bulk-insert into ``livestream``.
-
-    Returns the number of enriched rows written. Same code path fed by
-    live's REST prime and replay's intraday_bars prefix -- source is the
-    caller's job to shape into ``(symbol, symbolid, [bars])`` tuples.
+    Walk each symbol's bars through ``st.apply_bar`` in ts order and
+    return the enriched batch. Pure in-memory state work -- no DB, no
+    awaits. Same code path fed by live's REST prime and replay's
+    intraday_bars prefix; the caller shapes the input into
+    ``(symbol, symbolid, [bars])`` tuples.
     """
     all_enriched: list[Bar] = []
     for sym, _sid, bars in bars_by_symbol:
@@ -87,7 +87,14 @@ async def enrich_and_bulk_persist(
         st = store.get(sym)
         for bar in bars:
             all_enriched.append(st.apply_bar(bar))
+    return all_enriched
 
-    if all_enriched:
-        await bulk_insert_livestream_bars(pool, all_enriched)
-    return len(all_enriched)
+
+async def bulk_persist_bars(pool: asyncpg.Pool, bars: list[Bar]) -> int:
+    """
+    Bulk-insert an enriched batch into ``livestream`` and return the row
+    count. No-op on empty input.
+    """
+    if bars:
+        await bulk_insert_livestream_bars(pool, bars)
+    return len(bars)

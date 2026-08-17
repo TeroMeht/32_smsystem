@@ -39,7 +39,8 @@ import asyncpg
 from backend.database.readers import load_intraday_bars_for_day
 from backend.datapipe.runtime.bar_processor import BarSink, process_bar
 from backend.datapipe.runtime.priming import (
-    enrich_and_bulk_persist,
+    bulk_persist_bars,
+    enrich_prime_bars,
     seed_session_state,
 )
 from backend.datapipe.runtime.session_state import SessionStore
@@ -160,9 +161,8 @@ async def run_replay(
             prefix, tail = [], timeline
 
         if prefix:
-            written = await enrich_and_bulk_persist(
-                pool, store, _group_prefix_by_symbol(prefix),
-            )
+            enriched = enrich_prime_bars(store, _group_prefix_by_symbol(prefix))
+            written = await bulk_persist_bars(pool, enriched)
             logger.info("Primed livestream with %d prefix bars (session=%s)",
                         written, cfg.day.isoformat())
 

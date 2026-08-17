@@ -15,13 +15,13 @@ from backend.database.readers import (
     load_latest_livestream_per_symbol,
     load_livestream_bars_for_symbol,
 )
-from backend.dependencies import get_db_pool
+from backend.dependencies import get_pool
 
 router = APIRouter(prefix="/api/livestream", tags=["livestream"])
 
 
 @router.get("/top")
-async def top(pool: asyncpg.Pool = Depends(get_db_pool)):
+async def top(pool: asyncpg.Pool = Depends(get_pool)):
     """
     Latest livestream row per symbol -- ALL rows, unfiltered, unsorted.
 
@@ -34,7 +34,7 @@ async def top(pool: asyncpg.Pool = Depends(get_db_pool)):
 
 
 @router.get("/bars/{symbol}")
-async def bars(symbol: str, pool: asyncpg.Pool = Depends(get_db_pool)):
+async def bars(symbol: str, pool: asyncpg.Pool = Depends(get_pool)):
     """
     Every livestream row currently on disk for the symbol, ordered by ts.
     Since livestream is truncated at session start, this is the current

@@ -28,7 +28,8 @@ from backend.core.config import settings
 from backend.datapipe.runtime.aggregation import BarAggregator
 from backend.datapipe.runtime.bar_processor import BarSink, process_bar
 from backend.datapipe.runtime.priming import (
-    enrich_and_bulk_persist,
+    bulk_persist_bars,
+    enrich_prime_bars,
     seed_session_state,
 )
 from backend.datapipe.runtime.session_state import SessionStore
@@ -76,15 +77,21 @@ async def _initialize_livestream(
     concurrency: int = 10,
 ) -> None:
     """
-    Compose the three startup steps:
-      1. Seed per-symbol state (ATR + rvol baseline) from the DB.
-      2. REST-fetch today's already-occurred bars.
-      3. Enrich them via ``apply_bar`` and bulk-insert into livestream.
+    Compose the startup steps:
+      1. Seed per-symbol state (ATR + rvol baseline) from the DB, AND
+         REST-fetch today's already-occurred bars -- these are
+         independent I/O against different backends, so they run
+         concurrently via ``asyncio.gather``.
+      2. Enrich the fetched bars via ``apply_bar`` (needs seeded state)
+         and bulk-insert into livestream.
     """
     today_et = session_date_et(datetime.now(timezone.utc))
-    await seed_session_state(pool, store, symbol_map, today_et)
-    fetched = await _rest_prime_bars(rest, symbol_map, today_et, concurrency)
-    await enrich_and_bulk_persist(pool, store, fetched)
+    _, fetched = await asyncio.gather(
+        seed_session_state(pool, store, symbol_map, today_et),
+        _rest_prime_bars(rest, symbol_map, today_et, concurrency),
+    )
+    enriched = enrich_prime_bars(store, fetched)
+    await bulk_persist_bars(pool, enriched)
 
 
 
