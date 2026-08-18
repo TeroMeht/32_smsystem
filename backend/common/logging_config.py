@@ -69,10 +69,15 @@ def setup_app_logging(
     """
     Configure the ROOT logger for the FastAPI app. All module loggers
     (backend.*) inherit from root, so this one call routes every log line
-    from the whole app to stdout + ``log_dir/app.log``.
+    from the whole app to stdout.
 
-    Idempotent — replaces any handlers we've attached before so it's safe
-    to call from the lifespan on every reload.
+    Stdout only -- no file handler. The per-bar INFO lines used to blow
+    ``app.log`` up to gigabytes over a session, so file logging is off.
+    ``log_dir`` is kept in the signature for compatibility but no longer
+    written to.
+
+    Idempotent -- replaces any handlers we've attached before so it's
+    safe to call from the lifespan on every reload.
     """
     root = logging.getLogger()
     root.setLevel(level)
@@ -81,12 +86,6 @@ def setup_app_logging(
     for h in list(root.handlers):
         if getattr(h, "_sm_owned", False):
             root.removeHandler(h)
-
-    log_dir.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(log_dir / "app.log", mode="a", encoding="utf-8")
-    fh.setFormatter(_FMT)
-    fh._sm_owned = True  # type: ignore[attr-defined]
-    root.addHandler(fh)
 
     ch = logging.StreamHandler(sys.stdout)
     ch.setFormatter(_FMT)

@@ -33,8 +33,8 @@ CREATE UNLOGGED TABLE livestream (
     volume    bigint,
     vwap      numeric(12,4),
     ema9      numeric(12,4),
-    rvol_cum  numeric(8,4),
-    relatr    numeric(8,4),
+    rvol_cum  numeric(12,4),
+    relatr    numeric(12,4),
     PRIMARY KEY (symbolid, ts)
 );
 

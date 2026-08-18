@@ -158,11 +158,14 @@ async def _consume(
 
             try:
                 await process_bar(pool, store, bar, sink=sink)
+                
                 logger.info(
-                    "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d",
+                    "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d rvol=%s relatr=%s",
                     bar.symbol,
                     to_helsinki(bar.ts).strftime("%H:%M"),
                     bar.open, bar.high, bar.low, bar.close, bar.volume,
+                    f"{bar.rvol_cum:.2f}",
+                    f"{bar.relatr:.2f}"  ,
                 )
             except Exception:
                 logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)
