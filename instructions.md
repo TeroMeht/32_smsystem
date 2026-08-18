@@ -7,9 +7,6 @@ something out of my initial plan. The longer I monitor, the higher the risk is. 
 
 After the alarm is set my job is to evaluate the stock chart and decide if there is a setup to be taken. This can be considered as a layer between me and the market. 
 
-Replay - test mode
-
-There will be historical data fetch which will continue with realtime datafeed. Test mode for the system would be replay mode where user can set it into replay mode and for all monitored symbols 2min candle data for certain day will be fetch from data source. This means that system will initialize itself like it was running that specific day. Those 2min candles will be inserted into database and user can run them candle by candle with user defined replay speed.
 Stock universe- Weekly filtering process
 
 US mid and large caps

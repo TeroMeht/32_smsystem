@@ -5,7 +5,7 @@ Contract:
   * Connect, auth, subscribe to AM.<sym> for every active monitored symbol.
   * Every incoming message is validated as AggregateMinuteMessage, mapped
     to a symbolid via the in-memory map, and passed through
-    ``bar_processor.process_bar`` -- the same pipeline replay uses.
+    ``bar_processor.process_bar``.
   * Reconnect with exponential backoff on transport failures; each
     reconnect re-subscribes to the current active set (in case the
     universe was refreshed while we were down).
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 
-async def _rest_prime_bars(
+async def _fetch_today_intraday_bars(
     rest: RestClient,
     symbol_map: MonitoredSymbols,
     day: date,
@@ -88,9 +88,9 @@ async def _initialize_livestream(
     today_et = session_date_et(datetime.now(timezone.utc))
     _, fetched = await asyncio.gather(
         seed_session_state(pool, store, symbol_map, today_et),
-        _rest_prime_bars(rest, symbol_map, today_et, concurrency),
+        _fetch_today_intraday_bars(rest, symbol_map, today_et, concurrency), # Hakee Rest apista tämän päivän jo tapahtuneet barit samaan aikaan kun sessio alustetaan
     )
-    enriched = enrich_prime_bars(store, fetched)
+    enriched = enrich_prime_bars(store, fetched) # jatkojalostaa tämän päivän baarit
     await bulk_persist_bars(pool, enriched)
 
 

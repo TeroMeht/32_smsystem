@@ -15,11 +15,8 @@ are torn down in the lifespan's ``finally`` block regardless of whether
 startup succeeded.
 
 The datapipe is pure orchestration -- ``pipeline.startup(app, pool, rest)``
-receives the infra as arguments and only owns the background livestream/
-replay task (stashed on ``app.state.live_task``).
-
-Mode selection is driven entirely by ``settings.MODE`` / env; there is no
-runtime endpoint to switch or trigger replays.
+receives the infra as arguments and only owns the background livestream
+task (stashed on ``app.state.live_task``).
 
 All HTTP routes live in ``backend.routers.*`` and are composed here via
 ``include_router``. Route bodies MUST NOT contain SQL -- all persistence

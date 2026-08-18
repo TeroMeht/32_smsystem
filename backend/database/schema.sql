@@ -3,10 +3,10 @@
 -- Stock monitoring system — 1-min bars, cumulative RVOL
 --
 -- Data source: Massive/Polygon WS /stocks/AM (1-min aggregates) for live
--- and REST /v2/aggs/.../range/1/minute/... for historian + replay backfill.
+-- and REST /v2/aggs/.../range/1/minute/... for historian backfill.
 -- All indicator baselines (VWAP, EMA9, RVOL, RelATR) are computed on the
 -- 1-min cadence; the DB schema is deliberately timespan-agnostic (just OHLCV
--- rows keyed by ts) so the same tables serve live and replay identically.
+-- rows keyed by ts).
 -- =========================================================
 
 -- 1. monitored_symbols

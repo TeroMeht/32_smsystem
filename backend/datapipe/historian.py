@@ -304,7 +304,6 @@ async def backfill_all_symbols(
     need_daily: bool,
     need_intraday: bool,
     concurrency: int = 10,
-    replay_mode: bool = False,
 ) -> None:
     """
     End-to-end warmup for every active symbol.
@@ -314,16 +313,17 @@ async def backfill_all_symbols(
     flags; passing both False is a no-op.
 
     Fetch-end semantics:
-      * intraday_end -- ``today`` in replay (replay driver reads the day
-                        out of intraday_bars), else ``today - 1``.
-      * daily_end    -- ALWAYS previous_trading_day(today), both modes,
-                        so ATR14 never folds today's own row into
-                        today's RelATR (would leak look-ahead).
+      * intraday_end -- ``today - 1`` (live path -- today's intraday bars
+                        arrive via the WS livestream, not the REST
+                        backfill).
+      * daily_end    -- ``previous_trading_day(today)`` so ATR14 never
+                        folds today's own row into today's RelATR (would
+                        leak look-ahead).
     """
     logger.info(
         "Backfill starting for %d symbols "
-        "(today= %s, replay_mode= %s, need_daily= %s, need_intraday= %s)",
-        len(symbol_map), today.isoformat(), replay_mode, need_daily, need_intraday,
+        "(today= %s, need_daily= %s, need_intraday= %s)",
+        len(symbol_map), today.isoformat(), need_daily, need_intraday,
     )
 
     # 1. Ensure partitions exist for the retention window forward.
@@ -333,7 +333,7 @@ async def backfill_all_symbols(
 
     # 2. Build the todo lists.
     intraday_start = today - timedelta(days=settings.INTRADAY_BACKFILL_DAYS)
-    intraday_end   = today if replay_mode else today - timedelta(days=1)
+    intraday_end   = today - timedelta(days=1)
     daily_end      = previous_trading_day(today)
 
     daily_todo:    list[tuple[str, int]]       = (

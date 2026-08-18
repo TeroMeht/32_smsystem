@@ -188,7 +188,7 @@ class DailyBar(BaseModel):
 # Active-symbol universe
 # ---------------------------------------------------------------------------
 # Loaded once by ``load_active_symbol_map`` at pipeline startup and passed
-# read-only through ``run_livestream`` / ``run_replay``. Treated as
-# read-only by convention -- if you need enforced immutability, wrap in
+# read-only through ``run_livestream``. Treated as read-only by
+# convention -- if you need enforced immutability, wrap in
 # ``types.MappingProxyType`` at the load site.
 MonitoredSymbols = dict[str, int]  # symbol -> symbolid

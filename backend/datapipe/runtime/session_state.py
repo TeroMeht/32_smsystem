@@ -32,16 +32,23 @@ class SymbolSessionState:
 
         The per-bar rvol baseline is looked up internally from
         ``rvol_baseline`` keyed by the bar's Helsinki time slot -- callers
-        never need to pass it. Called by both the live WS consumer (via
-        ``process_bar``) and the replay prefix-prime path so behavior is
-        identical between them. Persistence + optional sink live in
+        never need to pass it. Called by the live WS consumer (via
+        ``process_bar``). Persistence + optional sink live in
         ``bar_processor.process_bar``.
         """
         slot_avg = self.rvol_baseline.get(helsinki_time_slot(bar.ts), 0.0)
         vwap = calculate_next_vwap(bar, self.history)
         bar.vwap = vwap
         bar.ema9 = calculate_next_ema(bar, self.history)
-        bar.relatr = calculate_next_relatr(vwap, bar.close, self.atr)
+        # Skip RelATR when ATR is missing (symbol had no daily_indicators
+        # row at seed time). The livestream ``relatr`` column is nullable;
+        # calculate_next_relatr assumes a valid ATR and would ZeroDiv /
+        # TypeError otherwise. Never pass NaN/None into the calc layer.
+        bar.relatr = (
+            calculate_next_relatr(vwap, bar.close, self.atr)
+            if self.atr
+            else None
+        )
         bar.rvol_cum = calculate_next_rvol_cum(
             bar.volume, self.vol_sum, slot_avg, self.baseline_history_sum,
         )

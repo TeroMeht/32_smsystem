@@ -16,7 +16,6 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from backend.core.config import settings
 from backend.datapipe.schemas import BAR_MINUTES
 
 
@@ -57,17 +56,6 @@ def to_helsinki(dt: datetime) -> datetime:
     return _ensure_utc(dt).astimezone(HELSINKI)
 
 
-def helsinki_hhmm_to_utc(day: date, hhmm: str) -> datetime:
-    """
-    Take a strict 24-hour "HH:MM" string interpreted as Helsinki local
-    time on ``day`` and return the corresponding UTC datetime (tz-aware).
-    DST handled automatically via ZoneInfo("Europe/Helsinki").
-    """
-    h_str, m_str = hhmm.split(":")
-    hki_dt = datetime(day.year, day.month, day.day, int(h_str), int(m_str), 0, tzinfo=HELSINKI)
-    return hki_dt.astimezone(UTC)
-
-
 # ---------------------------------------------------------------------------
 # session grid (ET-based)
 # ---------------------------------------------------------------------------
@@ -98,21 +86,6 @@ def previous_trading_day(d: date) -> date:
     while prev.weekday() >= 5:  # 5 = Sat, 6 = Sun
         prev -= timedelta(days=1)
     return prev
-
-
-def effective_today() -> date:
-    """
-    The date the pipeline should treat as "today".
-
-      * MODE=live   -> wall-clock date.today()
-      * MODE=replay -> settings.REPLAY_DAY
-
-    Historian, data cleanup, and rvol_baseline rebuild all key off this.
-    Replay mode also feeds REPLAY_DAY into the replay driver.
-    """
-    if settings.MODE == "replay":
-        return settings.REPLAY_DAY
-    return date.today()
 
 
 # ---------------------------------------------------------------------------

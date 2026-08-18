@@ -150,57 +150,6 @@ async def load_livestream_bars_for_symbol(
     ]
 
 
-async def load_intraday_bars_for_day(
-    pool: asyncpg.Pool,
-    day: date,
-    symbolids: Iterable[int],
-) -> list[Bar]:
-    """
-    All ``intraday_bars`` rows for ``day`` (ET session date) whose
-    ``symbolid`` is in ``symbolids``, joined to ``monitored_symbols`` for
-    the ticker string. Ordered by ``ts`` ascending -- so a single
-    ``async for`` gives a chronologically-merged, cross-symbol timeline
-    ready for the replay driver.
-
-    One round trip regardless of how many symbols are in the list.
-    """
-    sids = list(symbolids)
-    if not sids:
-        return []
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT ib.symbolid,
-                   ib.ts,
-                   ib.open,
-                   ib.high,
-                   ib.low,
-                   ib.close,
-                   ib.volume,
-                   ms.symbol
-              FROM intraday_bars ib
-              JOIN monitored_symbols ms ON ms.symbolid = ib.symbolid
-             WHERE ib.symbolid = ANY($1::int[])
-               AND (ib.ts AT TIME ZONE 'America/New_York')::date = $2
-             ORDER BY ib.ts ASC;
-            """,
-            sids, day,
-        )
-    return [
-        Bar(
-            symbol=r["symbol"],
-            symbolid=r["symbolid"],
-            ts=r["ts"],
-            open=float(r["open"]),
-            high=float(r["high"]),
-            low=float(r["low"]),
-            close=float(r["close"]),
-            volume=int(r["volume"]),
-        )
-        for r in rows
-    ]
-
-
 async def load_rvol_baseline_for_symbol(
     pool: asyncpg.Pool,
     symbolid: int,

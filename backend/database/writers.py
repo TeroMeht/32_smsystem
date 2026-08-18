@@ -2,16 +2,14 @@
 Async DB writes for the datapipe.
 
 All persistence goes through this module so the datapipe layer has no
-direct SQL. Three tables get written from the live/replay hot path:
+direct SQL. Three tables get written from the live hot path:
 
   * ``livestream``      -- ephemeral today-only table with the four
                            indicator columns. Truncated at every session
                            boundary. Reader-friendly: strategies query the
                            last N rows here for state.
   * ``intraday_bars``   -- permanent partitioned history (5-day retention),
-                           raw OHLCV only. Fed by both live and replay
-                           paths so replay data is indistinguishable from
-                           live once written.
+                           raw OHLCV only. Fed by the historian backfill.
   * ``daily``           -- historian only (never the live path).
 """
 
@@ -165,7 +163,7 @@ async def bulk_insert_intraday_bars(
     bars: Sequence[Bar],
 ) -> None:
     """
-    Backfill/replay bulk insert into intraday_bars.
+    Backfill bulk insert into intraday_bars.
 
     Uses COPY into a per-connection TEMP staging table, then a single
     ``INSERT ... SELECT ... ON CONFLICT DO NOTHING`` from staging into the

@@ -1,7 +1,7 @@
 """
-Startup priming helpers shared by live + replay.
+Startup priming helpers for the live path.
 
-Three orthogonal steps live here so both runtime paths can compose them:
+Three orthogonal steps live here so the runtime can compose them:
 
   * ``seed_session_state``  -- pull ATR (daily_indicators) and rvol
                                baselines (rvol_baseline) from the DB and
@@ -12,8 +12,8 @@ Three orthogonal steps live here so both runtime paths can compose them:
   * ``bulk_persist_bars``   -- bulk-insert an enriched batch into the
                                ``livestream`` table.
 
-Neither enrich nor persist knows where its inputs came from -- REST
-prime (live) or intraday_bars (replay) is the caller's concern.
+Neither enrich nor persist knows where its inputs came from -- the REST
+prime is the caller's concern.
 """
 
 from __future__ import annotations
@@ -55,11 +55,14 @@ async def seed_session_state(
         "Seeding session state (session=%s, symbols=%d) -- showing first 10",
         session_date.isoformat(), len(symbol_map),
     )
+    missing_atr: list[str] = []
     for i, (sym, sid) in enumerate(symbol_map.items()):
         baseline = await load_rvol_baseline_for_symbol(pool, sid)
         st = store.init(sym, sid, session_date)
         st.atr = atr_map.get(sid)
         st.rvol_baseline = baseline
+        if st.atr is None:
+            missing_atr.append(sym)
         if i < 10:
             logger.info(
                 "  %-8s sid=%-6d ATR=%s  rvol_baseline slots=%-3d sum=%.2f",
@@ -67,6 +70,14 @@ async def seed_session_state(
                 f"{st.atr:.4f}" if st.atr is not None else "None",
                 len(baseline), sum(baseline.values()),
             )
+    if missing_atr:
+        # RelATR will be null for these symbols this session -- see
+        # apply_bar's guard. Common cause: daily backfill failed for the
+        # symbol, or ATR compute produced NaN and got dropped.
+        logger.warning(
+            "No ATR seeded for %d symbol(s) -- RelATR will be null: %s",
+            len(missing_atr), ", ".join(missing_atr),
+        )
 
 
 def enrich_prime_bars(
@@ -76,8 +87,7 @@ def enrich_prime_bars(
     """
     Walk each symbol's bars through ``st.apply_bar`` in ts order and
     return the enriched batch. Pure in-memory state work -- no DB, no
-    awaits. Same code path fed by live's REST prime and replay's
-    intraday_bars prefix; the caller shapes the input into
+    awaits. Fed by live's REST prime; the caller shapes the input into
     ``(symbol, symbolid, [bars])`` tuples.
     """
     all_enriched: list[Bar] = []

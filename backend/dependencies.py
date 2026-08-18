@@ -5,7 +5,7 @@ The DB pool and REST client are created and owned by ``main.py``'s
 lifespan, stashed on ``app.state``, and reached from route handlers via
 the ``get_pool`` / ``get_rest`` FastAPI ``Depends`` helpers below.
 
-The datapipe (livestream, replay, historian) receives them as explicit
+The datapipe (livestream, historian) receives them as explicit
 parameters -- see ``pipeline.startup(app, pool, rest)`` -- so business
 logic never touches ``app.state`` either. Only route handlers and the
 lifespan interact with the shared infra through this module.

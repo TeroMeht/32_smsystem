@@ -152,8 +152,8 @@ async def rebuild_rvol_model(
     Full rebuild of the ``rvol_baseline`` table from intraday_bars in
     the calendar window ``[end_day - lookback_days, end_day)``.
 
-    ``end_day`` is exclusive (matches replay semantics: baseline must
-    not include the target day itself). For live use, pass ``today``.
+    ``end_day`` is exclusive -- the baseline must not include the
+    target day itself. For live use, pass ``today``.
 
     Reads inputs via ``database.readers``, runs the pure compute
     pipeline defined in this module, then hands the result to
