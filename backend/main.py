@@ -26,6 +26,7 @@ goes through ``backend.database``.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -71,6 +72,13 @@ async def lifespan(app: FastAPI):
 
     try:
         await pipeline.startup(app, pool, rest)
+        # Print the dashboard URL once the datapipe is up. Reads HOST/PORT
+        # from the environment (set by start.bat) with 127.0.0.1:8000
+        # defaults, so a manual `uvicorn --port 8001` invocation should
+        # also export PORT=8001 to keep this line accurate.
+        _host = os.environ.get("HOST", "127.0.0.1")
+        _port = os.environ.get("PORT", "8001")
+        logger.info("UI ready: http://%s:%s/ui/relatr.html", _host, _port)
         yield
     finally:
         logger.info("32_smsystem shutting down")

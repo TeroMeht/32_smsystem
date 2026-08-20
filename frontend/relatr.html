@@ -4,73 +4,90 @@
 <meta charset="utf-8">
 <title>RelATR live</title>
 <!--
-  Live RelATR dashboard.
+  Live dual-stream dashboard.
 
-  Two concerns on one page, top to bottom:
-    1. Chart (top)  -- rendered by /ui/chart.js. On a table-row click,
-                       the current session's candles for that symbol are
-                       fetched from /api/livestream/bars/{symbol}.
-    2. Table (below) -- polls /api/livestream/top on a user-chosen
-                        interval and shows the current top-N symbols by
-                        RelATR.
+  Layout, top-to-bottom:
+    * A single, centered chart panel. Hidden on first load; appears once
+      the user clicks any row in either table. Chart symbol is whichever
+      row was clicked most recently, from EITHER stream. Selection state
+      is shared across both streams so the clicked row highlights in one
+      table and de-highlights whatever was selected before, no matter
+      which side of the page it lived in.
+    * Two independent streams side by side, each polling
+      /api/livestream/top on the shared refresh interval and rendering
+      a filter row + a table of the current top-N symbols. Left stream
+      defaults to "top by RelATR"; right stream defaults to "top by RVOL".
 
-  Chart logic lives in a separate ES module so this page stays about
-  layout + table plumbing, and chart internals (candle setup, cache,
-  render pipeline) can evolve without touching this file.
+  Streams share the same fetch payload but keep their own filter values,
+  sort order, and localStorage slot. There is no per-symbol chart grid --
+  the single top chart above is the only chart on the page, and it loads
+  only what the user asks for by clicking a row.
+
+  Chart logic lives in a separate ES module (/ui/chart.js) so this page
+  stays about layout + table plumbing.
 -->
 <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
   html, body { margin: 0; padding: 0; background: #0f1115; color: #e6e8ec;
                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-  .wrap { max-width: 1200px; margin: 24px auto; padding: 0 16px; }
-  header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; }
+  .wrap { max-width: 2000px; margin: 24px auto; padding: 0 16px; }
+  header.page-header { display: flex; align-items: baseline; gap: 16px; margin-bottom: 12px; }
   h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: 0.5px; }
-  .meta { font-size: 12px; color: #8a92a5; }
+  .meta-global { font-size: 12px; color: #8a92a5; }
   .controls { margin-left: auto; display: flex; gap: 10px; align-items: center;
               font-size: 12px; color: #8a92a5; flex-wrap: wrap; }
   select, input { background: #1a1e26; color: #e6e8ec; border: 1px solid #2a2f3a;
                   border-radius: 4px; padding: 3px 6px; font-size: 12px; }
-  .filters { display: flex; gap: 10px; align-items: center; font-size: 12px;
-             color: #8a92a5; padding: 8px 12px; margin-bottom: 12px;
+
+  /* Selected-row chart. Sits above the two tables, centered, capped so it
+     doesn't dominate on ultrawide monitors. Hidden until first row click. */
+  .chart-wrap { max-width: 1200px; margin: 0 auto 20px;
+                border: 1px solid #1e232d; border-radius: 6px;
+                background: #12161d; }
+  .chart-wrap.hidden { display: none; }
+  .chart-header { display: flex; align-items: baseline; gap: 12px;
+                  padding: 10px 14px; border-bottom: 1px solid #1e232d; }
+  .chart-header h2 { font-size: 14px; margin: 0; font-weight: 600; }
+  .chart-header .info { font-size: 12px; color: #8a92a5; }
+  .chart-header .close-btn { margin-left: auto; background: transparent;
+                             color: #8a92a5; border: 1px solid #2a2f3a;
+                             border-radius: 4px; padding: 2px 8px;
+                             font-size: 12px; cursor: pointer; }
+  .chart-header .close-btn:hover { color: #e6e8ec; border-color: #3a4150; }
+  #chart { width: 100%; height: 360px; }
+
+  /* Two streams side by side. On narrow viewports they stack. */
+  .streams { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 1100px) { .streams { grid-template-columns: 1fr; } }
+
+  .stream { min-width: 0; }  /* let grid children shrink below their content width */
+  .stream-header { display: flex; align-items: baseline; gap: 10px;
+                   padding: 6px 2px; margin-bottom: 6px; }
+  .stream-header h2 { font-size: 14px; margin: 0; font-weight: 600;
+                      letter-spacing: 0.4px; color: #e6e8ec; }
+  .stream-header .meta { font-size: 11px; color: #8a92a5; }
+
+  .filters { display: flex; gap: 8px; align-items: center; font-size: 12px;
+             color: #8a92a5; padding: 8px 10px; margin-bottom: 12px;
              background: #12161d; border: 1px solid #1e232d; border-radius: 6px;
              flex-wrap: wrap; }
   .filters label { display: inline-flex; align-items: center; gap: 4px; }
-  .filters input { width: 80px; }
+  .filters input { width: 70px; }
+  .filters select { width: auto; }
   .filters button { background: #1a1e26; color: #e6e8ec; border: 1px solid #2a2f3a;
                     border-radius: 4px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
   .filters button:hover { background: #232833; }
 
-  .chart-wrap { margin-bottom: 22px; border: 1px solid #1e232d; border-radius: 6px;
-                background: #12161d; }
-  .chart-header { display: flex; align-items: baseline; gap: 12px;
-                  padding: 10px 14px; border-bottom: 1px solid #1e232d; }
-  .chart-header h2 { font-size: 14px; margin: 0; }
-  .chart-header .info { font-size: 12px; color: #8a92a5; }
-  #chart { width: 100%; height: 360px; }
-
-  /* Grid of mini-charts: one cell per filtered symbol, 3 per row. */
-  .chart-grid { display: grid; grid-template-columns: repeat(3, 1fr);
-                gap: 12px; margin-top: 20px; }
-  .grid-cell { border: 1px solid #1e232d; border-radius: 6px;
-               background: #12161d; overflow: hidden; }
-  .grid-cell .cell-header { display: flex; justify-content: space-between;
-                            align-items: baseline; padding: 6px 10px;
-                            border-bottom: 1px solid #1e232d;
-                            font-size: 12px; }
-  .grid-cell .cell-symbol { color: #e6e8ec; font-weight: 600; }
-  .grid-cell .cell-info { color: #8a92a5; font-size: 11px; }
-  .grid-cell .cell-body { width: 100%; height: 180px; }
-
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th, td { padding: 6px 10px; text-align: right; border-bottom: 1px solid #1e232d; }
-  th { text-align: right; font-size: 11px; color: #8a92a5; font-weight: 500;
-       text-transform: uppercase; letter-spacing: 0.6px; }
+  th, td { padding: 5px 8px; text-align: right; border-bottom: 1px solid #1e232d;
+           font-size: 12px; }
+  th { text-align: right; font-size: 10px; color: #8a92a5; font-weight: 500;
+       text-transform: uppercase; letter-spacing: 0.5px; }
   th:first-child, td:first-child { text-align: left; }
   tbody tr { cursor: pointer; }
   tbody tr:hover td { background: #17252b; }
   tbody tr.selected td { background: #1c2a34; }
   tr.updated td { background: rgba(80, 200, 120, 0.08); transition: background 0.9s; }
-  /* Bright palette shared with the chart candles / VWAP line. */
   /* Bright palette shared with the chart candles / VWAP line. */
   td.pos { color: #22e56d; }
   td.neg { color: #ff4757; }
@@ -83,15 +100,10 @@
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1>Live RelATR</h1>
-    <span class="meta" id="meta">loading&hellip;</span>
+  <header class="page-header">
+    <h1>Live Scanner</h1>
+    <span class="meta-global" id="metaGlobal">loading&hellip;</span>
     <div class="controls">
-      Sort:
-      <select id="order">
-        <option value="desc">RelATR desc (below VWAP)</option>
-        <option value="abs">|RelATR| magnitude</option>
-      </select>
       Rows:
       <input id="n" type="number" min="1" max="500" value="20" style="width: 60px">
       Refresh:
@@ -104,95 +116,25 @@
     </div>
   </header>
 
-  <!-- Live-editable filter thresholds. Values persist to localStorage so
-       reloading the page keeps whatever the user last set. -->
-  <div class="filters">
-    <label>Min RelATR    <input id="fMinRelatr"    type="number" step="0.01"></label>
-    <label>Min RVOL      <input id="fMinRvol"      type="number" step="0.1"></label>
-    <label>Min Volume    <input id="fMinVolume"    type="number" step="1"></label>
-    <label>Min CumVol    <input id="fMinCumVolume" type="number" step="1000"></label>
-    <button id="fReset" title="Restore defaults">Reset</button>
-  </div>
-
-  <!-- Chart -- populated on row click by chart.js -->
-  <div class="chart-wrap">
+  <!-- Selected-row chart. Hidden until the user clicks a row in either table. -->
+  <div id="chartWrap" class="chart-wrap hidden">
     <div class="chart-header">
-      <h2 id="chartSymbol">Click a row below to load today's session</h2>
+      <h2 id="chartSymbol">-</h2>
       <span class="info" id="chartInfo"></span>
+      <button class="close-btn" id="chartClose" title="Close chart">Close</button>
     </div>
     <div id="chart"></div>
   </div>
 
-  <!-- Mini-chart grid: one cell per filter-matched symbol, 3 per row.
-       Reconciled and refreshed on the same interval as the table. -->
-  <div id="chartGrid" class="chart-grid"></div>
-
-  <table id="tbl">
-    <thead>
-      <tr>
-        <th>#</th>
-        <th>Symbol</th>
-        <th>Time</th>
-        <th>Close</th>
-        <th>Chg%</th>
-        <th>VWAP</th>
-        <th>EMA9</th>
-        <th>RVOL</th>
-        <th>RelATR</th>
-        <th>Volume</th>
-        <th>CumVol</th>
-        <th>TV</th>
-      </tr>
-    </thead>
-    <tbody id="body"></tbody>
-  </table>
+  <div class="streams">
+    <!-- Stream sections are filled by JS from STREAM_CONFIGS below. -->
+    <section class="stream" id="stream-relatr"></section>
+    <section class="stream" id="stream-rvol"></section>
+  </div>
 </div>
 
 <script type="module">
   import { initChart } from '/ui/chart.js';
-
-  // ---------- client-side filters (live-editable in the UI) --------------
-  // Backend returns the LATEST bar per symbol, unfiltered. All thresholds
-  // are set from the input fields above; their values persist in
-  // localStorage so a reload keeps whatever the user last set.
-  const FILTER_DEFAULTS = {
-    minRelatr:    0.45,
-    minRvol:      2.0,
-    minVolume:    100,
-    minCumVolume: 100000,
-  };
-  const FILTER_STORAGE_KEY = 'relatr.filters';
-
-  const fEls = {
-    minRelatr:    document.getElementById('fMinRelatr'),
-    minRvol:      document.getElementById('fMinRvol'),
-    minVolume:    document.getElementById('fMinVolume'),
-    minCumVolume: document.getElementById('fMinCumVolume'),
-  };
-
-  function loadFilters() {
-    let saved = {};
-    try { saved = JSON.parse(localStorage.getItem(FILTER_STORAGE_KEY)) || {}; }
-    catch { saved = {}; }
-    const merged = { ...FILTER_DEFAULTS, ...saved };
-    for (const [k, v] of Object.entries(merged)) fEls[k].value = v;
-    return merged;
-  }
-  function readFilters() {
-    const out = {};
-    for (const [k, defVal] of Object.entries(FILTER_DEFAULTS)) {
-      const raw = fEls[k].value;
-      const n = raw === '' ? defVal : Number(raw);
-      out[k] = Number.isFinite(n) ? n : defVal;
-    }
-    return out;
-  }
-  function saveFilters(f) {
-    try { localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(f)); }
-    catch {}
-  }
-
-  let FILTERS = loadFilters();
 
   // ---------- TradingView deep-link ---------------------------------------
   // Every table row gets a small ↗ button that opens the symbol in your
@@ -207,83 +149,7 @@
     return `https://www.tradingview.com/chart/${TV_LAYOUT_ID}/?symbol=${encodeURIComponent(sym)}`;
   }
 
-  // ---------- chart -------------------------------------------------------
-  const chartApi = initChart({
-    containerEl: document.getElementById('chart'),
-    titleEl:     document.getElementById('chartSymbol'),
-    infoEl:      document.getElementById('chartInfo'),
-  });
-
-  // ---------- mini-chart grid --------------------------------------------
-  // One chart per filter-matched symbol, 3 per row, reconciled + refreshed
-  // on each poll tick. Each grid chart shares chart.js with the top chart,
-  // but with a smaller height and shorter cache (fresh data every tick).
-  const chartGridEl = document.getElementById('chartGrid');
-  const gridCharts = new Map();  // symbol -> { chart, cell }
-
-  function mountGridCell(symbol) {
-    const cell = document.createElement('div');
-    cell.className = 'grid-cell';
-    cell.dataset.symbol = symbol;
-    cell.innerHTML = `
-      <div class="cell-header">
-        <span class="cell-symbol">${symbol}</span>
-        <span class="cell-info"></span>
-      </div>
-      <div class="cell-body"></div>
-    `;
-    chartGridEl.appendChild(cell);
-    const chart = initChart({
-      containerEl: cell.querySelector('.cell-body'),
-      titleEl:     cell.querySelector('.cell-symbol'),
-      infoEl:      cell.querySelector('.cell-info'),
-      height:      180,
-      cacheTtlMs:  3000,   // short cache so grid updates feel live
-    });
-    gridCharts.set(symbol, { chart, cell });
-  }
-
-  function unmountGridCell(symbol) {
-    const entry = gridCharts.get(symbol);
-    if (!entry) return;
-    entry.chart.dispose();
-    entry.cell.remove();
-    gridCharts.delete(symbol);
-  }
-
-  function reconcileGrid(orderedSymbols) {
-    const wanted = new Set(orderedSymbols);
-    // Drop cells whose symbol no longer matches the filter.
-    for (const sym of Array.from(gridCharts.keys())) {
-      if (!wanted.has(sym)) unmountGridCell(sym);
-    }
-    // Add + reorder to match the table's ranking.
-    let prev = null;
-    for (const sym of orderedSymbols) {
-      if (!gridCharts.has(sym)) mountGridCell(sym);
-      const { cell } = gridCharts.get(sym);
-      if (prev === null) chartGridEl.prepend(cell);
-      else prev.after(cell);
-      prev = cell;
-    }
-    // Refresh every cell's bars. chart.load(symbol) hits /api/livestream/bars/{sym};
-    // the short cache means each tick actually fetches, so new 2-min bars land as
-    // soon as they're written to the livestream table.
-    for (const [sym, { chart }] of gridCharts) {
-      chart.load(sym);
-    }
-  }
-
-  // ---------- table polling ----------------------------------------------
-  const bodyEl = document.getElementById('body');
-  const metaEl = document.getElementById('meta');
-  const orderEl = document.getElementById('order');
-  const nEl = document.getElementById('n');
-  const intervalEl = document.getElementById('interval');
-  const lastTsBySymbol = new Map();  // symbol -> ts, to flash updated rows
-  let selectedSymbol = null;         // for cross-poll row highlight
-  let pollTimer = null;
-
+  // ---------- shared formatters ------------------------------------------
   function fmt(v, digits) {
     if (v === null || v === undefined) return '-';
     return Number(v).toFixed(digits);
@@ -295,7 +161,6 @@
   function fmtTime(iso) {
     if (!iso) return '-';
     const d = new Date(iso);
-    // 24-hour format everywhere in this app (matches backend/log convention).
     return d.toLocaleTimeString([], {
       hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
     });
@@ -306,35 +171,243 @@
     });
   }
 
-  async function tick() {
-    const n = Number(nEl.value) || 20;
-    const order = orderEl.value;
-    try {
-      const r = await fetch(`/api/livestream/top`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = await r.json();
-      const now = new Date();
+  // ---------- filter catalog --------------------------------------------
+  // Full schema of threshold filters. Each stream picks the subset it
+  // wants via cfg.filterKeys, so e.g. the RVOL stream can drop the
+  // RelATR threshold entirely (input hidden AND not applied to rows).
+  //   field:   row field on /api/livestream/top payload
+  //   label:   input label
+  //   step:    number-input step
+  //   default: fallback if no persisted value
+  //   short:   short name used in the meta line
+  const FILTER_SPECS = {
+    minRelatr:    { field: 'relatr',     label: 'Min RelATR',  step: 0.01, default: 0.45,    short: 'relatr' },
+    minRvol:      { field: 'rvol_cum',   label: 'Min RVOL',    step: 0.1,  default: 2.0,     short: 'rvol'   },
+    minVolume:    { field: 'volume',     label: 'Min Volume',  step: 1,    default: 100,     short: 'vol'    },
+    minCumVolume: { field: 'cum_volume', label: 'Min CumVol',  step: 1000, default: 100000,  short: 'cumvol' },
+  };
 
-      // All display filters live here. Backend returns the latest bar
-      // per symbol, unfiltered; we apply thresholds, sort, and limit.
-      const f = FILTERS;
-      let rows = data.rows.filter(r =>
-        r.relatr     !== null && r.relatr     >= f.minRelatr    &&
-        r.rvol_cum   !== null && r.rvol_cum   >= f.minRvol      &&
-        r.volume     !== null && r.volume     >= f.minVolume    &&
-        r.cum_volume !== null && r.cum_volume >= f.minCumVolume
-      );
-      if (order === 'abs') {
-        rows.sort((a, b) => Math.abs(b.relatr) - Math.abs(a.relatr));
-      } else {
-        rows.sort((a, b) => b.relatr - a.relatr);
+  // ---------- stream configs ---------------------------------------------
+  // Two independent streams. They share the filter-input schema and the
+  // same backend fetch, but keep their own values, sort, table, and
+  // filter subset. filterKeys picks which entries of FILTER_SPECS to show
+  // and apply -- order in this array is the render order in the UI.
+  const STREAM_CONFIGS = [
+    {
+      id:             'relatr',
+      title:          'Top RelATR',
+      mountId:        'stream-relatr',
+      storageKey:     'relatr.filters',
+      sortStorageKey: 'relatr.sort',
+      defaultSort:    'relatr_desc',
+      filterKeys:     ['minRelatr', 'minRvol', 'minVolume', 'minCumVolume'],
+      sortOptions: [
+        { value: 'relatr_desc', label: 'RelATR desc (below VWAP)' },
+        { value: 'relatr_abs',  label: '|RelATR| magnitude' },
+        { value: 'rvol_desc',   label: 'RVOL desc' },
+      ],
+    },
+    {
+      id:             'rvol',
+      title:          'Top RVOL',
+      mountId:        'stream-rvol',
+      storageKey:     'rvol.filters',
+      sortStorageKey: 'rvol.sort',
+      defaultSort:    'rvol_desc',
+      // RelATR threshold intentionally omitted -- this stream is a pure
+      // "biggest RVOL right now" scanner, RelATR direction doesn't gate it.
+      filterKeys:     ['minRvol', 'minVolume', 'minCumVolume'],
+      sortOptions: [
+        { value: 'rvol_desc',   label: 'RVOL desc' },
+        { value: 'relatr_desc', label: 'RelATR desc (below VWAP)' },
+        { value: 'relatr_abs',  label: '|RelATR| magnitude' },
+      ],
+    },
+  ];
+
+  // ---------- shared page-level controls ---------------------------------
+  const metaGlobalEl = document.getElementById('metaGlobal');
+  const nEl          = document.getElementById('n');
+  const intervalEl   = document.getElementById('interval');
+
+  // ---------- selected-row chart -----------------------------------------
+  // Single chart above the tables. Hidden until first row click. Selection
+  // is a PAGE-LEVEL concern (shared across both streams): clicking a row
+  // in stream A clears the selection in stream B, and vice-versa. Each
+  // stream's render() reads `selectedSymbol` to decide row highlighting.
+  const chartWrapEl    = document.getElementById('chartWrap');
+  const chartCloseBtn  = document.getElementById('chartClose');
+  const chartApi = initChart({
+    containerEl: document.getElementById('chart'),
+    titleEl:     document.getElementById('chartSymbol'),
+    infoEl:      document.getElementById('chartInfo'),
+  });
+  let selectedSymbol = null;
+
+  function selectSymbol(symbol) {
+    selectedSymbol = symbol;
+    const wasHidden = chartWrapEl.classList.contains('hidden');
+    chartWrapEl.classList.remove('hidden');
+    // chart.js measures its container width at initChart() time. On page
+    // load #chartWrap is display:none, so #chart.clientWidth == 0 and the
+    // chart canvas gets created 0px wide. Once we un-hide the wrapper we
+    // have to tell the chart to re-measure, or the fetched bars render
+    // into an invisible 0-width canvas. chart.js already listens for
+    // window 'resize' and re-applies containerEl.clientWidth, so the
+    // cheapest correct fix is to fire that event once, after unhide.
+    if (wasHidden) window.dispatchEvent(new Event('resize'));
+    chartApi.load(symbol);
+    // Update highlight immediately, don't wait for the next poll.
+    for (const s of streams) s.refreshSelectionHighlight();
+  }
+
+  function clearSelection() {
+    selectedSymbol = null;
+    chartWrapEl.classList.add('hidden');
+    for (const s of streams) s.refreshSelectionHighlight();
+  }
+
+  chartCloseBtn.addEventListener('click', clearSelection);
+
+  // ---------- stream factory ---------------------------------------------
+  // Builds the DOM for one stream inside its mount <section>, wires filter
+  // + sort persistence, and returns { render(rows, now), renderError(msg),
+  // refreshSelectionHighlight() }. Fetching is centralized (see tickAll
+  // below) so both streams see the same snapshot of /api/livestream/top
+  // per tick. Row clicks call the page-level selectSymbol() so both
+  // streams stay in sync on which row is "the chart's row".
+  function createStream(cfg) {
+    const mount = document.getElementById(cfg.mountId);
+
+    // Per-stream defaults built from this stream's filterKeys, so only
+    // active filters get a value + get persisted.
+    const streamDefaults = Object.fromEntries(
+      cfg.filterKeys.map(k => [k, FILTER_SPECS[k].default])
+    );
+
+    // ----- load persisted filters + sort -----
+    function loadFilters() {
+      let saved = {};
+      try { saved = JSON.parse(localStorage.getItem(cfg.storageKey)) || {}; }
+      catch { saved = {}; }
+      // Only keep saved keys that this stream still uses (defends against
+      // an old localStorage entry that names a filter we've since removed).
+      const filtered = {};
+      for (const k of cfg.filterKeys) {
+        if (k in saved) filtered[k] = saved[k];
       }
+      return { ...streamDefaults, ...filtered };
+    }
+    function saveFilters(f) {
+      try { localStorage.setItem(cfg.storageKey, JSON.stringify(f)); }
+      catch {}
+    }
+    function loadSort() {
+      try { return localStorage.getItem(cfg.sortStorageKey) || cfg.defaultSort; }
+      catch { return cfg.defaultSort; }
+    }
+    function saveSort(v) {
+      try { localStorage.setItem(cfg.sortStorageKey, v); } catch {}
+    }
+
+    let FILTERS = loadFilters();
+    let SORT    = loadSort();
+
+    // ----- build DOM -----
+    const sortOptionsHtml = cfg.sortOptions
+      .map(o => `<option value="${o.value}">${o.label}</option>`)
+      .join('');
+    // Only render inputs for this stream's filterKeys, so the RVOL stream
+    // literally does not carry a Min RelATR input.
+    const filterInputsHtml = cfg.filterKeys.map(k => {
+      const spec = FILTER_SPECS[k];
+      return `<label>${spec.label}    <input data-f="${k}" type="number" step="${spec.step}"></label>`;
+    }).join('\n        ');
+    mount.innerHTML = `
+      <div class="stream-header">
+        <h2>${cfg.title}</h2>
+        <span class="meta" data-meta></span>
+      </div>
+      <div class="filters">
+        <label>Sort
+          <select data-sort>${sortOptionsHtml}</select>
+        </label>
+        ${filterInputsHtml}
+        <button data-reset title="Restore defaults">Reset</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Symbol</th>
+            <th>Time</th>
+            <th>Close</th>
+            <th>Chg%</th>
+            <th>VWAP</th>
+            <th>EMA9</th>
+            <th>RVOL</th>
+            <th>RelATR</th>
+            <th>Volume</th>
+            <th>CumVol</th>
+            <th>TV</th>
+          </tr>
+        </thead>
+        <tbody data-body></tbody>
+      </table>
+    `;
+
+    const metaEl   = mount.querySelector('[data-meta]');
+    const sortEl   = mount.querySelector('[data-sort]');
+    const bodyEl   = mount.querySelector('[data-body]');
+    const resetBtn = mount.querySelector('[data-reset]');
+    const fEls = {};
+    for (const key of cfg.filterKeys) {
+      fEls[key] = mount.querySelector(`[data-f="${key}"]`);
+    }
+
+    // paint saved values into inputs
+    for (const [k, v] of Object.entries(FILTERS)) fEls[k].value = v;
+    sortEl.value = SORT;
+
+    // ----- render one snapshot of data -----
+    const lastTsBySymbol = new Map();
+
+    function applySort(rows, sortKey) {
+      switch (sortKey) {
+        case 'relatr_abs':
+          return rows.sort((a, b) => Math.abs(b.relatr) - Math.abs(a.relatr));
+        case 'rvol_desc':
+          return rows.sort((a, b) =>
+            (b.rvol_cum ?? -Infinity) - (a.rvol_cum ?? -Infinity));
+        case 'relatr_desc':
+        default:
+          return rows.sort((a, b) => b.relatr - a.relatr);
+      }
+    }
+
+    function render(dataRows, now) {
+      const n = Number(nEl.value) || 20;
+      const f = FILTERS;
+      // Only apply the thresholds this stream actually configures.
+      // Missing key = no gate on that field.
+      let rows = dataRows.filter(r => {
+        for (const k of cfg.filterKeys) {
+          const spec = FILTER_SPECS[k];
+          const v = r[spec.field];
+          if (v === null || v === undefined || v < f[k]) return false;
+        }
+        return true;
+      });
+      rows = applySort(rows, SORT);
       rows = rows.slice(0, n);
 
+      const filterSummary = cfg.filterKeys
+        .map(k => `${FILTER_SPECS[k].short}>=${f[k]}`)
+        .join(', ');
       metaEl.textContent =
-        `${rows.length} rows (relatr>=${f.minRelatr}, rvol>=${f.minRvol}, ` +
-        `vol>=${f.minVolume}, cumvol>=${f.minCumVolume}, ` +
-        `${data.rows.length} received)  |  last update ${fmtNow(now)}`;
+        `${rows.length}/${dataRows.length}  ` +
+        `[${filterSummary}]  ` +
+        `@ ${fmtNow(now)}`;
 
       const seen = new Set();
       const frag = document.createDocumentFragment();
@@ -352,6 +425,8 @@
         // VWAP), GREEN for negative (price above VWAP).
         const rel = row.relatr;
         const relClass = rel > 0 ? 'neg' : (rel < 0 ? 'pos' : '');
+        // Selection is page-level; both streams highlight the same symbol
+        // if it appears in both of them.
         if (row.symbol === selectedSymbol) tr.classList.add('selected');
 
         const chg = row.chg_pct;
@@ -378,54 +453,98 @@
       for (const k of Array.from(lastTsBySymbol.keys())) {
         if (!seen.has(k)) lastTsBySymbol.delete(k);
       }
+    }
 
-      // Mini-chart grid: sync cells to the same filtered/ordered set as
-      // the table, then refresh each cell's bars. Runs on every tick, so
-      // when the poll interval is 5s and BAR_MINUTES=2, every grid chart
-      // picks up new candles within ~5s of them being written.
-      reconcileGrid(rows.map(r => r.symbol));
+    function renderError(msg) {
+      metaEl.innerHTML = `<span class="stale">error: ${msg}</span>`;
+    }
+
+    // Called by selectSymbol()/clearSelection() so the highlight updates
+    // immediately without waiting for the next poll tick.
+    function refreshSelectionHighlight() {
+      for (const row of bodyEl.querySelectorAll('tr')) {
+        row.classList.toggle('selected', row.dataset.symbol === selectedSymbol);
+      }
+    }
+
+    // ----- filter/sort input wiring -----
+    function readFiltersFromInputs() {
+      const out = {};
+      for (const k of cfg.filterKeys) {
+        const defVal = streamDefaults[k];
+        const raw = fEls[k].value;
+        const n = raw === '' ? defVal : Number(raw);
+        out[k] = Number.isFinite(n) ? n : defVal;
+      }
+      return out;
+    }
+    function onFilterChange() {
+      FILTERS = readFiltersFromInputs();
+      saveFilters(FILTERS);
+      tickAll();
+    }
+    for (const el of Object.values(fEls)) {
+      el.addEventListener('input', onFilterChange);
+      el.addEventListener('change', onFilterChange);
+    }
+    sortEl.addEventListener('change', () => {
+      SORT = sortEl.value;
+      saveSort(SORT);
+      tickAll();
+    });
+    resetBtn.addEventListener('click', () => {
+      for (const [k, v] of Object.entries(streamDefaults)) fEls[k].value = v;
+      onFilterChange();
+    });
+
+    // Row click -> load into the shared top chart AND update selection
+    // across both streams (page-level state).
+    bodyEl.addEventListener('click', (e) => {
+      const tr = e.target.closest('tr');
+      if (!tr || !tr.dataset.symbol) return;
+      selectSymbol(tr.dataset.symbol);
+    });
+
+    return { render, renderError, refreshSelectionHighlight };
+  }
+
+  // ---------- shared polling loop ----------------------------------------
+  // One fetch per tick, fanned out to both streams so they render off the
+  // same snapshot. Filter/sort edits inside a stream call tickAll() to
+  // repaint immediately -- payload is small so re-fetching is cheap and
+  // keeps both sides in lockstep.
+  let pollTimer = null;
+  let inFlight  = false;
+
+  async function tickAll() {
+    if (inFlight) return;   // don't stack calls if fetch is slow
+    inFlight = true;
+    try {
+      const r = await fetch(`/api/livestream/top`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      const now = new Date();
+      metaGlobalEl.textContent =
+        `${data.rows.length} symbols received  |  last fetch ${fmtNow(now)}`;
+      for (const s of streams) s.render(data.rows, now);
     } catch (e) {
-      metaEl.innerHTML = `<span class="stale">error: ${e.message}</span>`;
+      metaGlobalEl.innerHTML = `<span class="stale">error: ${e.message}</span>`;
+      for (const s of streams) s.renderError(e.message);
+    } finally {
+      inFlight = false;
     }
   }
 
   function reschedule() {
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(tick, Number(intervalEl.value));
+    pollTimer = setInterval(tickAll, Number(intervalEl.value));
   }
-  orderEl.addEventListener('change', tick);
-  nEl.addEventListener('change', tick);
+  nEl.addEventListener('change', tickAll);
   intervalEl.addEventListener('change', reschedule);
 
-  // Filter inputs: re-read + persist + refresh on every edit.
-  function onFilterChange() {
-    FILTERS = readFilters();
-    saveFilters(FILTERS);
-    tick();
-  }
-  for (const el of Object.values(fEls)) {
-    el.addEventListener('input', onFilterChange);
-    el.addEventListener('change', onFilterChange);
-  }
-  document.getElementById('fReset').addEventListener('click', () => {
-    for (const [k, v] of Object.entries(FILTER_DEFAULTS)) fEls[k].value = v;
-    onFilterChange();
-  });
-
-  // Row click -> chart. Delegated so it survives table re-renders.
-  bodyEl.addEventListener('click', (e) => {
-    const tr = e.target.closest('tr');
-    if (!tr || !tr.dataset.symbol) return;
-    selectedSymbol = tr.dataset.symbol;
-    chartApi.load(selectedSymbol);
-    // Update highlight immediately, don't wait for the next poll.
-    for (const row of bodyEl.querySelectorAll('tr')) {
-      row.classList.toggle('selected', row.dataset.symbol === selectedSymbol);
-    }
-  });
-
-  // ---------- boot -------------------------------------------------------
-  tick();
+  // ---------- build streams + boot ---------------------------------------
+  const streams = STREAM_CONFIGS.map(createStream);
+  tickAll();
   reschedule();
 </script>
 </body>
