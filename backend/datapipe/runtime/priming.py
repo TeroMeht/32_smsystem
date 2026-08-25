@@ -30,8 +30,9 @@ from backend.database.readers import (
     load_rvol_baseline_for_symbol,
 )
 from backend.database.writers import bulk_insert_livestream_bars
-from backend.datapipe.runtime.session_state import SessionStore
-from backend.datapipe.schemas import Bar, MonitoredSymbols
+from indicators.session_state import SessionStore
+from backend.datapipe.time_utils import HELSINKI
+from backend.datapipe.schemas import CandleRow, MonitoredSymbols
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ async def seed_session_state(
     missing_prev_close: list[str] = []
     for i, (sym, sid) in enumerate(symbol_map.items()):
         baseline = await load_rvol_baseline_for_symbol(pool, sid)
-        st = store.init(sym, sid, session_date)
+        st = store.init(sym, session_date=session_date, session_tz=HELSINKI)
         st.atr           = atr_map.get(sid)
         st.prev_close    = prev_close_map.get(sid)
         st.rvol_baseline = baseline
@@ -95,15 +96,15 @@ async def seed_session_state(
 
 def enrich_prime_bars(
     store: SessionStore,
-    bars_by_symbol: Iterable[tuple[str, int, list[Bar]]],
-) -> list[Bar]:
+    bars_by_symbol: Iterable[tuple[str, int, list[CandleRow]]],
+) -> list[CandleRow]:
     """
     Walk each symbol's bars through ``st.apply_bar`` in ts order and
     return the enriched batch. Pure in-memory state work -- no DB, no
     awaits. Fed by live's REST prime; the caller shapes the input into
     ``(symbol, symbolid, [bars])`` tuples.
     """
-    all_enriched: list[Bar] = []
+    all_enriched: list[CandleRow] = []
     for sym, _sid, bars in bars_by_symbol:
         if not bars:
             continue
@@ -113,7 +114,7 @@ def enrich_prime_bars(
     return all_enriched
 
 
-async def bulk_persist_bars(pool: asyncpg.Pool, bars: list[Bar]) -> int:
+async def bulk_persist_bars(pool: asyncpg.Pool, bars: list[CandleRow]) -> int:
     """
     Bulk-insert an enriched batch into ``livestream`` and return the row
     count. No-op on empty input.

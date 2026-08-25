@@ -9,7 +9,7 @@ Contract:
     handles connect / auth / subscribe / control-frame filtering, and
     emits one ``IncomingBar`` per AM message to the ``on_bar`` callback
     defined inside ``run_livestream``.
-  * ``on_bar`` wraps ``IncomingBar`` -> ``Bar`` via ``Bar.from_incoming``,
+  * ``on_bar`` wraps ``IncomingBar`` -> ``CandleRow`` via ``candle_row_from_incoming``,
     feeds the per-symbol ``BarAggregator``, and forwards each finalized
     N-min bar to ``bar_processor.process_bar``.
   * Session boundary: the historian is called before we open the
@@ -33,8 +33,13 @@ from backend.datapipe.runtime.priming import (
     enrich_prime_bars,
     seed_session_state,
 )
-from backend.datapipe.runtime.session_state import SessionStore
-from backend.datapipe.schemas import BAR_MINUTES, Bar, MonitoredSymbols
+from indicators.session_state import SessionStore
+from backend.datapipe.schemas import (
+    BAR_MINUTES,
+    CandleRow,
+    MonitoredSymbols,
+    candle_row_from_incoming,
+)
 from backend.datapipe.time_utils import session_date_et, to_helsinki
 from data_sources._bar import IncomingBar
 from data_sources._base import BarSize, HistoryWindow
@@ -54,7 +59,7 @@ async def _fetch_today_intraday_bars(
     symbol_map: MonitoredSymbols,
     day: date,
     concurrency: int,
-) -> list[tuple[str, int, list[Bar]]]:
+) -> list[tuple[str, int, list[CandleRow]]]:
     """
     REST-fetch today's already-occurred bars for every active symbol
     via the ``HistoricalSource`` seam, with bounded parallelism.
@@ -73,10 +78,10 @@ async def _fetch_today_intraday_bars(
     hist = PolygonHistoricalSource(polygon)
     sem = asyncio.Semaphore(concurrency)
 
-    async def _fetch(sym: str, sid: int) -> tuple[str, int, list[Bar]]:
+    async def _fetch(sym: str, sid: int) -> tuple[str, int, list[CandleRow]]:
         async with sem:
             ibs = await hist.fetch(sym, window)
-            return sym, sid, [Bar.from_incoming(b, sym, sid) for b in ibs]
+            return sym, sid, [candle_row_from_incoming(b, sym, sid) for b in ibs]
 
     return await asyncio.gather(*[
         _fetch(sym, sid) for sym, sid in symbol_map.items()
@@ -123,7 +128,7 @@ async def run_livestream(
       * hand the socket to ``PolygonRealtimeSource.subscribe``.
 
     ``on_bar`` (defined below) is the seam between the source-agnostic
-    ``IncomingBar`` the adapter emits and 32's canonical ``Bar`` the
+    ``IncomingBar`` the adapter emits and 32's canonical ``CandleRow`` the
     aggregator + ``process_bar`` consume. The N-min ``BarAggregator``
     stays on this side of the seam -- mirrors the IB pattern where the
     adapter emits 5-sec bars and the consumer aggregates.
@@ -138,7 +143,7 @@ async def run_livestream(
             sid = symbol_map.get(symbol)
             if sid is None:
                 return
-            raw_bar = Bar.from_incoming(incoming, symbol, sid)
+            raw_bar = candle_row_from_incoming(incoming, symbol, sid)
             agg = aggregators.setdefault(symbol, BarAggregator())
             bar = agg.feed(raw_bar)
             if bar is None:
@@ -150,7 +155,7 @@ async def run_livestream(
                     bar.symbol,
                     to_helsinki(bar.ts).strftime("%H:%M"),
                     bar.open, bar.high, bar.low, bar.close, bar.volume,
-                    f"{bar.rvol_cum:.2f}"    if bar.rvol_cum    is not None else "None",
+                    f"{bar.rvol:.2f}"    if bar.rvol    is not None else "None",
                     f"{bar.relatr:.2f}"      if bar.relatr      is not None else "None",
                     f"{bar.day_atr_ext:.2f}" if bar.day_atr_ext is not None else "None",
                 )

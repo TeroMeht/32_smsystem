@@ -45,7 +45,13 @@ from backend.database.writers import (
 )
 from backend.datapipe.calculations import rvol_baseline as rvol_model
 from indicators.atr import atr_series
-from backend.datapipe.schemas import BAR_MINUTES, Bar, DailyBar, MonitoredSymbols
+from backend.datapipe.schemas import (
+    BAR_MINUTES,
+    CandleRow,
+    DailyBar,
+    MonitoredSymbols,
+    candle_row_from_incoming,
+)
 from backend.datapipe.time_utils import previous_trading_day, session_date_et
 from data_sources._base import BarSize, HistoryWindow
 from data_sources.polygon import PolygonHistoricalSource, PolygonSource
@@ -93,7 +99,7 @@ async def _backfill_intraday_for_symbol(
     symbolid: int,
     start_day: date,
     end_day: date,
-) -> list[Bar]:
+) -> list[CandleRow]:
     """
     Fetch aggregation-cadence bars (BAR_MINUTES/minute) via the
     ``HistoricalSource`` seam. Polygon does the aggregation
@@ -107,7 +113,7 @@ async def _backfill_intraday_for_symbol(
         end           = end_dt,
     )
     ibs = await PolygonHistoricalSource(polygon).fetch(symbol, window)
-    return [Bar.from_incoming(b, symbol, symbolid) for b in ibs]
+    return [candle_row_from_incoming(b, symbol, symbolid) for b in ibs]
 
 
 # ============================================================================

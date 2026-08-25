@@ -1,5 +1,5 @@
 """
-Persistence + fan-out wrapper around a single incoming Bar.
+Persistence + fan-out wrapper around a single incoming CandleRow.
 
 The per-bar state transition (compute indicators, append to history,
 advance running sums) lives on ``SymbolSessionState.apply_bar``. This
@@ -19,26 +19,26 @@ from typing import Awaitable, Callable, Optional
 import asyncpg
 
 from backend.database.writers import insert_livestream_bar
-from backend.datapipe.runtime.session_state import SessionStore
-from backend.datapipe.schemas import Bar
+from indicators.session_state import SessionStore
+from backend.datapipe.schemas import CandleRow
 
 logger = logging.getLogger(__name__)
 
 
-# Callback signature: async fn taking the enriched Bar. Return value ignored.
-BarSink = Callable[[Bar], Awaitable[None]]
+# Callback signature: async fn taking the enriched CandleRow. Return value ignored.
+BarSink = Callable[[CandleRow], Awaitable[None]]
 
 
 async def process_bar(
     pool: asyncpg.Pool,
     store: SessionStore,
-    bar: Bar,
+    bar: CandleRow,
     sink: Optional[BarSink] = None,
-) -> Bar:
+) -> CandleRow:
     """
     Enrich ``bar`` via session state, persist to livestream, fire sink.
 
-    Returns the enriched Bar so callers doing synchronous follow-up
+    Returns the enriched CandleRow so callers doing synchronous follow-up
     work (unit tests) can inspect the same object the sink saw.
     """
     st = store.get(bar.symbol)

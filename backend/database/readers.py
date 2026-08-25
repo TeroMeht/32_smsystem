@@ -5,7 +5,7 @@ Kept separate from writers.py so the read/write contracts are easy to
 audit. Reads here are:
 
   * monitored symbol map    -- symbol -> symbolid, used to translate WS
-                               messages into Bar without a per-message
+                               messages into CandleRow without a per-message
                                DB round trip.
   * latest ATR per symbol   -- from the ``daily`` table; feeds RelATR.
   * session bars so far     -- read from ``livestream`` to warm up the
@@ -21,7 +21,7 @@ from typing import Iterable, Optional
 
 import asyncpg
 import pandas as pd
-from backend.datapipe.schemas import Bar, MonitoredSymbols
+from backend.datapipe.schemas import CandleRow, MonitoredSymbols
 from backend.datapipe.time_utils import HELSINKI
 
 
@@ -141,7 +141,7 @@ async def load_livestream_bars_for_symbol(
     when hovering a row: today's chart, not historical context.
 
     Returns dict-shaped rows (JSON-ready) including the enriched columns
-    (vwap, ema9, rvol_cum, relatr) so the client can overlay them later
+    (vwap, ema9, rvol, relatr) so the client can overlay them later
     if we want, though the initial candles-only view ignores them.
     """
     async with pool.acquire() as conn:
@@ -150,7 +150,7 @@ async def load_livestream_bars_for_symbol(
             SELECT l.ts,
                    l.open, l.high, l.low, l.close,
                    l.volume,
-                   l.vwap, l.ema9, l.rvol_cum, l.relatr, l.day_atr_ext
+                   l.vwap, l.ema9, l.rvol, l.relatr, l.day_atr_ext
               FROM livestream l
               JOIN monitored_symbols ms USING (symbolid)
              WHERE ms.symbol = $1
@@ -168,7 +168,7 @@ async def load_livestream_bars_for_symbol(
             "volume": int(r["volume"]),
             "vwap": float(r["vwap"]) if r["vwap"] is not None else None,
             "ema9": float(r["ema9"]) if r["ema9"] is not None else None,
-            "rvol_cum": float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
+            "rvol": float(r["rvol"]) if r["rvol"] is not None else None,
             "relatr": float(r["relatr"]) if r["relatr"] is not None else None,
             "day_atr_ext": float(r["day_atr_ext"]) if r["day_atr_ext"] is not None else None,
         }
@@ -259,7 +259,7 @@ async def load_latest_livestream_per_symbol(
                        l.close,
                        l.vwap,
                        l.ema9,
-                       l.rvol_cum,
+                       l.rvol,
                        l.relatr,
                        l.day_atr_ext,
                        l.volume
@@ -331,7 +331,7 @@ async def load_latest_livestream_per_symbol(
             "close": close,
             "vwap": float(r["vwap"]) if r["vwap"] is not None else None,
             "ema9": float(r["ema9"]) if r["ema9"] is not None else None,
-            "rvol_cum": float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
+            "rvol": float(r["rvol"]) if r["rvol"] is not None else None,
             # Round relatr at the API boundary so the frontend never sees
             # 4-decimal noise -- 2 decimals is the display precision.
             "relatr": round(float(r["relatr"]), 2) if r["relatr"] is not None else None,
@@ -369,7 +369,7 @@ async def load_livestream_bars_for_symbol_today(
     pool: asyncpg.Pool,
     symbolid: int,
     today_et: date,
-) -> list[Bar]:
+) -> list[CandleRow]:
     """
     All livestream rows for ``symbolid`` whose ET session date is today,
     ordered by ts. Used to rehydrate per-symbol state from what livestream
@@ -379,7 +379,7 @@ async def load_livestream_bars_for_symbol_today(
         rows = await conn.fetch(
             """
             SELECT l.symbolid, l.ts, l.open, l.high, l.low, l.close, l.volume,
-                   l.vwap, l.ema9, l.rvol_cum, l.relatr, l.day_atr_ext,
+                   l.vwap, l.ema9, l.rvol, l.relatr, l.day_atr_ext,
                    ms.symbol
               FROM livestream l
               JOIN monitored_symbols ms USING (symbolid)
@@ -390,7 +390,7 @@ async def load_livestream_bars_for_symbol_today(
             symbolid, today_et,
         )
     return [
-        Bar(
+        CandleRow(
             symbol=r["symbol"],
             symbolid=r["symbolid"],
             ts=r["ts"],
@@ -401,7 +401,7 @@ async def load_livestream_bars_for_symbol_today(
             volume=int(r["volume"]),
             vwap=float(r["vwap"]) if r["vwap"] is not None else None,
             ema9=float(r["ema9"]) if r["ema9"] is not None else None,
-            rvol_cum=float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
+            rvol=float(r["rvol"]) if r["rvol"] is not None else None,
             relatr=float(r["relatr"]) if r["relatr"] is not None else None,
             day_atr_ext=float(r["day_atr_ext"]) if r["day_atr_ext"] is not None else None,
         )

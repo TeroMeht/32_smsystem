@@ -3,16 +3,19 @@ Typed data models for the shapes crossing internal module boundaries.
 
 Two shapes to be aware of:
 
-  * ``Bar``       -- the *canonical* intraday bar the rest of the system
-                     consumes. Explicit field names, tz-aware UTC
-                     timestamp, symbolid resolved.
+  * ``CandleRow`` -- the *canonical* enriched intraday bar, defined in
+                     the shared ``indicators`` package and re-exported
+                     here for convenience. Explicit field names, tz-
+                     aware UTC ``ts``, ``symbolid`` resolved.
   * ``DailyBar``  -- one raw daily OHLCV row for the ``daily`` table.
+                     Not shared -- lives here because only the historian
+                     ever touches it.
 
 Wire-format shapes (Polygon REST results / WS /stocks/AM payloads) live
 inside ``data_sources.polygon`` -- consumers never see them. The polygon
-adapter emits ``IncomingBar`` at the seam; the ``from_incoming``
-classmethods below wrap those into ``Bar`` / ``DailyBar`` in one line at
-the two callers that need them (livestream + historian).
+adapter emits ``IncomingBar`` at the seam; ``DailyBar.from_incoming``
+(historian) and the CandleRow constructor calls in livestream/warmup
+wrap those into typed rows.
 """
 
 from __future__ import annotations
@@ -21,6 +24,33 @@ from datetime import date, datetime
 from typing import Optional
 
 from data_sources._bar import IncomingBar
+from indicators.candle_row import CandleRow  # re-exported from shared package
+
+
+def candle_row_from_incoming(incoming, symbol: str, symbolid: int) -> "CandleRow":
+    """
+    Build a ``CandleRow`` from an ``IncomingBar`` (or anything with the
+    same six attributes) at the data_sources -> project seam.
+
+    Kept in this module -- next to ``DailyBar.from_incoming`` -- so
+    every adapter concern lives on the project side and the shared
+    ``indicators`` package stays free of any implicit knowledge about
+    what an ``IncomingBar`` is.
+
+    ``incoming.date`` is a tz-aware UTC datetime; it lands on ``ts``.
+    Local ``date`` / ``time`` fields are left ``None`` -- the DB
+    writers don't need them on this table.
+    """
+    return CandleRow(
+        symbol   = symbol,
+        symbolid = symbolid,
+        ts       = incoming.date,
+        open     = float(incoming.open),
+        high     = float(incoming.high),
+        low      = float(incoming.low),
+        close    = float(incoming.close),
+        volume   = float(incoming.volume),
+    )
 from pydantic import BaseModel, ConfigDict
 
 
@@ -37,59 +67,6 @@ BAR_MINUTES = 2
 
 # ---------------------------------------------------------------------------
 # Canonical bar -- the ONLY bar shape used past the adapter boundary
-# ---------------------------------------------------------------------------
-
-
-class Bar(BaseModel):
-    """
-    A validated N-min OHLCV bar with indicator slots.
-
-    Persisted directly to ``livestream`` (indicator columns filled) and
-    to ``intraday_bars`` (indicator columns dropped -- history table
-    only stores the raw OHLCV). ``ts`` is always UTC tz-aware, matching
-    timestamptz.
-    """
-
-    model_config = ConfigDict(frozen=False)
-
-    symbol: str
-    symbolid: int
-    ts: datetime  # UTC, tz-aware -- window start
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: int
-    # Indicator slots populated by SymbolSessionState.apply_bar via
-    # the shared `indicators` package.
-    vwap: Optional[float] = None          # session-cumulative VWAP
-    ema9: Optional[float] = None
-    rvol_cum: Optional[float] = None
-    relatr: Optional[float] = None
-    day_atr_ext: Optional[float] = None   # (prev_close - close) / atr
-
-    @classmethod
-    def from_incoming(cls, ib: IncomingBar, symbol: str, symbolid: int) -> "Bar":
-        """
-        Wrap an ``IncomingBar`` from the data_sources seam into a
-        canonical ``Bar``. ``IncomingBar.date`` is expected to be a
-        tz-aware UTC datetime (both PolygonHistoricalSource and
-        PolygonRealtimeSource emit it that way).
-        """
-        return cls(
-            symbol   = symbol,
-            symbolid = symbolid,
-            ts       = ib.date,
-            open     = float(ib.open),
-            high     = float(ib.high),
-            low      = float(ib.low),
-            close    = float(ib.close),
-            volume   = int(ib.volume),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Daily bar shape (for the `daily` table + ATR14 warmup)
 # ---------------------------------------------------------------------------
 
 

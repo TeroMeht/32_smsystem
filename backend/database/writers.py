@@ -22,7 +22,7 @@ from typing import Iterable, Optional, Sequence
 
 import asyncpg
 
-from backend.datapipe.schemas import Bar, DailyBar
+from backend.datapipe.schemas import CandleRow, DailyBar
 from backend.datapipe.time_utils import to_helsinki
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 _INSERT_LIVESTREAM_SQL = """
     INSERT INTO livestream
         (symbolid, ts, open, high, low, close, volume,
-         vwap, ema9, rvol_cum, relatr, day_atr_ext)
+         vwap, ema9, rvol, relatr, day_atr_ext)
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     ON CONFLICT (symbolid, ts) DO UPDATE SET
         open        = EXCLUDED.open,
@@ -46,26 +46,26 @@ _INSERT_LIVESTREAM_SQL = """
         volume      = EXCLUDED.volume,
         vwap        = EXCLUDED.vwap,
         ema9        = EXCLUDED.ema9,
-        rvol_cum    = EXCLUDED.rvol_cum,
+        rvol    = EXCLUDED.rvol,
         relatr      = EXCLUDED.relatr,
         day_atr_ext = EXCLUDED.day_atr_ext;
 """
 
 
-async def insert_livestream_bar(pool: asyncpg.Pool, bar: Bar) -> None:
+async def insert_livestream_bar(pool: asyncpg.Pool, bar: CandleRow) -> None:
     """Upsert one enriched bar into livestream (indicators required)."""
     async with pool.acquire() as conn:
         await conn.execute(
             _INSERT_LIVESTREAM_SQL,
             bar.symbolid, bar.ts,
             bar.open, bar.high, bar.low, bar.close, bar.volume,
-            bar.vwap, bar.ema9, bar.rvol_cum, bar.relatr, bar.day_atr_ext,
+            bar.vwap, bar.ema9, bar.rvol, bar.relatr, bar.day_atr_ext,
         )
 
 
 async def bulk_insert_livestream_bars(
     pool: asyncpg.Pool,
-    bars: Sequence[Bar],
+    bars: Sequence[CandleRow],
 ) -> None:
     """
     Bulk-insert already-enriched bars into livestream. Used by the
@@ -82,7 +82,7 @@ async def bulk_insert_livestream_bars(
     rows = [
         (b.symbolid, b.ts,
          b.open, b.high, b.low, b.close, b.volume,
-         b.vwap, b.ema9, b.rvol_cum, b.relatr, b.day_atr_ext)
+         b.vwap, b.ema9, b.rvol, b.relatr, b.day_atr_ext)
         for b in bars
     ]
     async with pool.acquire() as conn:
@@ -99,7 +99,7 @@ async def bulk_insert_livestream_bars(
                     volume      bigint,
                     vwap        numeric(12,4),
                     ema9        numeric(12,4),
-                    rvol_cum    numeric(12,4),
+                    rvol    numeric(12,4),
                     relatr      numeric(12,4),
                     day_atr_ext numeric(12,4)
                 ) ON COMMIT DROP;
@@ -109,15 +109,15 @@ async def bulk_insert_livestream_bars(
                 "_stage_livestream",
                 records=rows,
                 columns=["symbolid", "ts", "open", "high", "low", "close", "volume",
-                         "vwap", "ema9", "rvol_cum", "relatr", "day_atr_ext"],
+                         "vwap", "ema9", "rvol", "relatr", "day_atr_ext"],
             )
             await conn.execute(
                 """
                 INSERT INTO livestream
                     (symbolid, ts, open, high, low, close, volume,
-                     vwap, ema9, rvol_cum, relatr, day_atr_ext)
+                     vwap, ema9, rvol, relatr, day_atr_ext)
                 SELECT symbolid, ts, open, high, low, close, volume,
-                       vwap, ema9, rvol_cum, relatr, day_atr_ext
+                       vwap, ema9, rvol, relatr, day_atr_ext
                   FROM _stage_livestream
                 ON CONFLICT (symbolid, ts) DO UPDATE SET
                     open        = EXCLUDED.open,
@@ -127,7 +127,7 @@ async def bulk_insert_livestream_bars(
                     volume      = EXCLUDED.volume,
                     vwap        = EXCLUDED.vwap,
                     ema9        = EXCLUDED.ema9,
-                    rvol_cum    = EXCLUDED.rvol_cum,
+                    rvol    = EXCLUDED.rvol,
                     relatr      = EXCLUDED.relatr,
                     day_atr_ext = EXCLUDED.day_atr_ext;
                 """
@@ -164,7 +164,7 @@ async def empty_livestream_table(pool: asyncpg.Pool) -> None:
 
 async def bulk_insert_intraday_bars(
     pool: asyncpg.Pool,
-    bars: Sequence[Bar],
+    bars: Sequence[CandleRow],
 ) -> None:
     """
     Backfill bulk insert into intraday_bars.

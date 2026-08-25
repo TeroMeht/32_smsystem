@@ -6,7 +6,7 @@ Two entry points, one canonical bar shape:
   * historian.backfill_symbols(...)  -- REST warmup on startup
   * livestream.run_livestream(...)   -- WS /stocks/AM consumer
 
-Both funnel bars through the same schemas.Bar dataclass and the same
+Both funnel bars through the same schemas.CandleRow dataclass and the same
 calculations layer (calculations.py) before persisting via
 backend.database.writers.
 
