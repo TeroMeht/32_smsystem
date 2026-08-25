@@ -60,6 +60,31 @@ async def load_latest_atr_map(pool: asyncpg.Pool) -> dict[int, float]:
     return {r["symbolid"]: float(r["atr"]) for r in rows}
 
 
+async def load_latest_prev_close_map(pool: asyncpg.Pool) -> dict[int, float]:
+    """
+    symbolid -> latest daily close from ``daily`` (DISTINCT ON per symbol).
+
+    Anchors the day-level ATR extension (``DayAtrExt``): a session-scoped
+    constant per symbol, seeded once at priming time. Historian keeps
+    ``daily`` current through the previous trading day, so this is
+    yesterday's close (or Friday's on a Monday) at boot.
+
+    Uses idx_daily_symbolid_date_desc for the ORDER BY. If a symbol has
+    no daily row yet, it simply won't appear in the returned dict --
+    DayAtrExt for that symbol stays None until backfill lands.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (symbolid) symbolid, close
+              FROM daily
+             WHERE close IS NOT NULL
+             ORDER BY symbolid, date DESC;
+            """
+        )
+    return {r["symbolid"]: float(r["close"]) for r in rows}
+
+
 async def load_intraday_bars_for_rvol(
     pool: asyncpg.Pool,
     start_utc: datetime,
@@ -125,7 +150,7 @@ async def load_livestream_bars_for_symbol(
             SELECT l.ts,
                    l.open, l.high, l.low, l.close,
                    l.volume,
-                   l.vwap, l.ema9, l.rvol_cum, l.relatr
+                   l.vwap, l.ema9, l.rvol_cum, l.relatr, l.day_atr_ext
               FROM livestream l
               JOIN monitored_symbols ms USING (symbolid)
              WHERE ms.symbol = $1
@@ -145,6 +170,7 @@ async def load_livestream_bars_for_symbol(
             "ema9": float(r["ema9"]) if r["ema9"] is not None else None,
             "rvol_cum": float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
             "relatr": float(r["relatr"]) if r["relatr"] is not None else None,
+            "day_atr_ext": float(r["day_atr_ext"]) if r["day_atr_ext"] is not None else None,
         }
         for r in rows
     ]
@@ -235,6 +261,7 @@ async def load_latest_livestream_per_symbol(
                        l.ema9,
                        l.rvol_cum,
                        l.relatr,
+                       l.day_atr_ext,
                        l.volume
                   FROM livestream l
                   JOIN monitored_symbols ms USING (symbolid)
@@ -308,6 +335,9 @@ async def load_latest_livestream_per_symbol(
             # Round relatr at the API boundary so the frontend never sees
             # 4-decimal noise -- 2 decimals is the display precision.
             "relatr": round(float(r["relatr"]), 2) if r["relatr"] is not None else None,
+            "day_atr_ext": (
+                round(float(r["day_atr_ext"]), 2) if r["day_atr_ext"] is not None else None
+            ),
             "volume": int(r["volume"]) if r["volume"] is not None else None,
             "cum_volume": int(r["cum_volume"]) if r["cum_volume"] is not None else None,
             "chg_pct": _chg_pct(close, ref),
@@ -342,14 +372,14 @@ async def load_livestream_bars_for_symbol_today(
 ) -> list[Bar]:
     """
     All livestream rows for ``symbolid`` whose ET session date is today,
-    ordered by ts. Used to rehydrate ``st.history`` from what livestream
+    ordered by ts. Used to rehydrate per-symbol state from what livestream
     already has, so we don't need to REST-fetch today's bars on restart.
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
             SELECT l.symbolid, l.ts, l.open, l.high, l.low, l.close, l.volume,
-                   l.vwap, l.ema9, l.rvol_cum, l.relatr,
+                   l.vwap, l.ema9, l.rvol_cum, l.relatr, l.day_atr_ext,
                    ms.symbol
               FROM livestream l
               JOIN monitored_symbols ms USING (symbolid)
@@ -373,6 +403,7 @@ async def load_livestream_bars_for_symbol_today(
             ema9=float(r["ema9"]) if r["ema9"] is not None else None,
             rvol_cum=float(r["rvol_cum"]) if r["rvol_cum"] is not None else None,
             relatr=float(r["relatr"]) if r["relatr"] is not None else None,
+            day_atr_ext=float(r["day_atr_ext"]) if r["day_atr_ext"] is not None else None,
         )
         for r in rows
     ]

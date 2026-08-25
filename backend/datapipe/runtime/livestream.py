@@ -146,12 +146,13 @@ async def run_livestream(
             try:
                 await process_bar(pool, store, bar, sink=sink)
                 logger.info(
-                    "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d rvol=%s relatr=%s",
+                    "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d rvol=%s relatr=%s dayext=%s",
                     bar.symbol,
                     to_helsinki(bar.ts).strftime("%H:%M"),
                     bar.open, bar.high, bar.low, bar.close, bar.volume,
-                    f"{bar.rvol_cum:.2f}" if bar.rvol_cum is not None else "None",
-                    f"{bar.relatr:.2f}"   if bar.relatr   is not None else "None",
+                    f"{bar.rvol_cum:.2f}"    if bar.rvol_cum    is not None else "None",
+                    f"{bar.relatr:.2f}"      if bar.relatr      is not None else "None",
+                    f"{bar.day_atr_ext:.2f}" if bar.day_atr_ext is not None else "None",
                 )
             except Exception:
                 logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)

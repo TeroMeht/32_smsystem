@@ -15,20 +15,11 @@ Env file location:  C:/codebase/env-repo/32_smsystem.env
 from pathlib import Path
 
 from pydantic_settings import BaseSettings
+from data_sources.polygon._config import PolygonSourceConfig
 
-
-class Settings(BaseSettings):
+class Settings(PolygonSourceConfig, BaseSettings):
     # --- Database ---
     DATABASE_URL: str
-
-    # --- Polygon.io ---
-    # POLYGON_BASE_URL -> REST         e.g. https://api.polygon.io
-    # POLYGON_WS_URL   -> WebSocket    e.g. wss://socket.polygon.io/stocks
-    # Polygon serves the two over DIFFERENT hosts, so we can't derive one
-    # from the other -- both are explicit env values.
-    POLYGON_API_KEY: str
-    POLYGON_BASE_URL: str
-    POLYGON_WS_URL: str
 
     # --- Stock universe filter thresholds ---
     UNIVERSE_MIN_PRICE:       float
@@ -41,25 +32,7 @@ class Settings(BaseSettings):
     HTTP_WORKERS_TICKER_DETAILS: int
     HTTP_WORKERS_GROUPED_DAILY:  int
 
-    # --- Historian / baseline knobs ---
-    # INTRADAY_BACKFILL_DAYS : calendar-day window fetched into intraday_bars.
-    #                          Doubles as the RETENTION window (everything we
-    #                          fetch is kept; partitions older than this get
-    #                          dropped each startup). 8 days guarantees >=5
-    #                          trading sessions after weekends/holidays.
-    # DAILY_BACKFILL_DAYS    : calendar-day window fetched into daily. Also
-    #                          the retention window. 20 days guarantees >=14
-    #                          trading days on disk so the ATR compute pass
-    #                          has enough context.
-    # RVOL_SAMPLE_SESSIONS   : trading sessions averaged into the baseline.
-    # ATR_SAMPLE_SESSIONS    : EWM span (trading sessions) used by the ATR
-    #                          smoother in _compute_daily_indicators. Default
-    #                          14 matches the classic ATR14. Needs enough
-    #                          daily rows on disk to warm up -- keep
-    #                          DAILY_BACKFILL_DAYS >= 1.5x this value.
-    #
-    # Freshness has NO knob: the rule is "we must have data through the
-    # previous trading day". Weekend rollback is calendar-derived.
+
     INTRADAY_BACKFILL_DAYS: int
     DAILY_BACKFILL_DAYS:    int
     RVOL_SAMPLE_SESSIONS:   int

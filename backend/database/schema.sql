@@ -24,17 +24,18 @@ CREATE TABLE monitored_symbols (
 
 -- 2. livestream (today only, ephemeral)
 CREATE UNLOGGED TABLE livestream (
-    symbolid  integer      NOT NULL REFERENCES monitored_symbols(symbolid),
-    ts        timestamptz  NOT NULL,
-    open      numeric(12,4),
-    high      numeric(12,4),
-    low       numeric(12,4),
-    close     numeric(12,4),
-    volume    bigint,
-    vwap      numeric(12,4),
-    ema9      numeric(12,4),
-    rvol_cum  numeric(12,4),
-    relatr    numeric(12,4),
+    symbolid    integer      NOT NULL REFERENCES monitored_symbols(symbolid),
+    ts          timestamptz  NOT NULL,
+    open        numeric(12,4),
+    high        numeric(12,4),
+    low         numeric(12,4),
+    close       numeric(12,4),
+    volume      bigint,
+    vwap        numeric(12,4),
+    ema9        numeric(12,4),
+    rvol_cum    numeric(12,4),
+    relatr      numeric(12,4),
+    day_atr_ext numeric(12,4),
     PRIMARY KEY (symbolid, ts)
 );
 

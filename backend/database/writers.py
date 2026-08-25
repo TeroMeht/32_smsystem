@@ -35,18 +35,20 @@ logger = logging.getLogger(__name__)
 
 _INSERT_LIVESTREAM_SQL = """
     INSERT INTO livestream
-        (symbolid, ts, open, high, low, close, volume, vwap, ema9, rvol_cum, relatr)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        (symbolid, ts, open, high, low, close, volume,
+         vwap, ema9, rvol_cum, relatr, day_atr_ext)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     ON CONFLICT (symbolid, ts) DO UPDATE SET
-        open = EXCLUDED.open,
-        high = EXCLUDED.high,
-        low = EXCLUDED.low,
-        close = EXCLUDED.close,
-        volume = EXCLUDED.volume,
-        vwap = EXCLUDED.vwap,
-        ema9 = EXCLUDED.ema9,
-        rvol_cum = EXCLUDED.rvol_cum,
-        relatr = EXCLUDED.relatr;
+        open        = EXCLUDED.open,
+        high        = EXCLUDED.high,
+        low         = EXCLUDED.low,
+        close       = EXCLUDED.close,
+        volume      = EXCLUDED.volume,
+        vwap        = EXCLUDED.vwap,
+        ema9        = EXCLUDED.ema9,
+        rvol_cum    = EXCLUDED.rvol_cum,
+        relatr      = EXCLUDED.relatr,
+        day_atr_ext = EXCLUDED.day_atr_ext;
 """
 
 
@@ -57,7 +59,7 @@ async def insert_livestream_bar(pool: asyncpg.Pool, bar: Bar) -> None:
             _INSERT_LIVESTREAM_SQL,
             bar.symbolid, bar.ts,
             bar.open, bar.high, bar.low, bar.close, bar.volume,
-            bar.vwap, bar.ema9, bar.rvol_cum, bar.relatr,
+            bar.vwap, bar.ema9, bar.rvol_cum, bar.relatr, bar.day_atr_ext,
         )
 
 
@@ -80,7 +82,7 @@ async def bulk_insert_livestream_bars(
     rows = [
         (b.symbolid, b.ts,
          b.open, b.high, b.low, b.close, b.volume,
-         b.vwap, b.ema9, b.rvol_cum, b.relatr)
+         b.vwap, b.ema9, b.rvol_cum, b.relatr, b.day_atr_ext)
         for b in bars
     ]
     async with pool.acquire() as conn:
@@ -88,17 +90,18 @@ async def bulk_insert_livestream_bars(
             await conn.execute(
                 """
                 CREATE TEMP TABLE _stage_livestream (
-                    symbolid  integer,
-                    ts        timestamptz,
-                    open      numeric(12,4),
-                    high      numeric(12,4),
-                    low       numeric(12,4),
-                    close     numeric(12,4),
-                    volume    bigint,
-                    vwap      numeric(12,4),
-                    ema9      numeric(12,4),
-                    rvol_cum  numeric(12,4),
-                    relatr    numeric(12,4)
+                    symbolid    integer,
+                    ts          timestamptz,
+                    open        numeric(12,4),
+                    high        numeric(12,4),
+                    low         numeric(12,4),
+                    close       numeric(12,4),
+                    volume      bigint,
+                    vwap        numeric(12,4),
+                    ema9        numeric(12,4),
+                    rvol_cum    numeric(12,4),
+                    relatr      numeric(12,4),
+                    day_atr_ext numeric(12,4)
                 ) ON COMMIT DROP;
                 """
             )
@@ -106,26 +109,27 @@ async def bulk_insert_livestream_bars(
                 "_stage_livestream",
                 records=rows,
                 columns=["symbolid", "ts", "open", "high", "low", "close", "volume",
-                         "vwap", "ema9", "rvol_cum", "relatr"],
+                         "vwap", "ema9", "rvol_cum", "relatr", "day_atr_ext"],
             )
             await conn.execute(
                 """
                 INSERT INTO livestream
                     (symbolid, ts, open, high, low, close, volume,
-                     vwap, ema9, rvol_cum, relatr)
+                     vwap, ema9, rvol_cum, relatr, day_atr_ext)
                 SELECT symbolid, ts, open, high, low, close, volume,
-                       vwap, ema9, rvol_cum, relatr
+                       vwap, ema9, rvol_cum, relatr, day_atr_ext
                   FROM _stage_livestream
                 ON CONFLICT (symbolid, ts) DO UPDATE SET
-                    open = EXCLUDED.open,
-                    high = EXCLUDED.high,
-                    low = EXCLUDED.low,
-                    close = EXCLUDED.close,
-                    volume = EXCLUDED.volume,
-                    vwap = EXCLUDED.vwap,
-                    ema9 = EXCLUDED.ema9,
-                    rvol_cum = EXCLUDED.rvol_cum,
-                    relatr = EXCLUDED.relatr;
+                    open        = EXCLUDED.open,
+                    high        = EXCLUDED.high,
+                    low         = EXCLUDED.low,
+                    close       = EXCLUDED.close,
+                    volume      = EXCLUDED.volume,
+                    vwap        = EXCLUDED.vwap,
+                    ema9        = EXCLUDED.ema9,
+                    rvol_cum    = EXCLUDED.rvol_cum,
+                    relatr      = EXCLUDED.relatr,
+                    day_atr_ext = EXCLUDED.day_atr_ext;
                 """
             )
 

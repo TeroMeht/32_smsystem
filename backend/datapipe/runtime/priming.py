@@ -26,6 +26,7 @@ import asyncpg
 
 from backend.database.readers import (
     load_latest_atr_map,
+    load_latest_prev_close_map,
     load_rvol_baseline_for_symbol,
 )
 from backend.database.writers import bulk_insert_livestream_bars
@@ -50,33 +51,45 @@ async def seed_session_state(
     can eyeball what was hydrated. Availability is assumed at this point
     -- upstream priming guarantees both are populated.
     """
-    atr_map = await load_latest_atr_map(pool)
+    atr_map        = await load_latest_atr_map(pool)
+    prev_close_map = await load_latest_prev_close_map(pool)
     logger.info(
         "Seeding session state (session=%s, symbols=%d) -- showing first 10",
         session_date.isoformat(), len(symbol_map),
     )
-    missing_atr: list[str] = []
+    missing_atr:        list[str] = []
+    missing_prev_close: list[str] = []
     for i, (sym, sid) in enumerate(symbol_map.items()):
         baseline = await load_rvol_baseline_for_symbol(pool, sid)
         st = store.init(sym, sid, session_date)
-        st.atr = atr_map.get(sid)
+        st.atr           = atr_map.get(sid)
+        st.prev_close    = prev_close_map.get(sid)
         st.rvol_baseline = baseline
         if st.atr is None:
             missing_atr.append(sym)
+        if st.prev_close is None:
+            missing_prev_close.append(sym)
         if i < 10:
             logger.info(
-                "  %-8s sid=%-6d ATR=%s  rvol_baseline slots=%-3d sum=%.2f",
+                "  %-8s sid=%-6d ATR=%s prev_close=%s rvol_baseline slots=%-3d sum=%.2f",
                 sym, sid,
-                f"{st.atr:.4f}" if st.atr is not None else "None",
+                f"{st.atr:.4f}"        if st.atr        is not None else "None",
+                f"{st.prev_close:.4f}" if st.prev_close is not None else "None",
                 len(baseline), sum(baseline.values()),
             )
     if missing_atr:
-        # RelATR will be null for these symbols this session -- see
-        # apply_bar's guard. Common cause: daily backfill failed for the
-        # symbol, or ATR compute produced NaN and got dropped.
+        # RelATR + DayAtrExt will be null for these symbols this session
+        # -- see apply_bar's guards. Common cause: daily backfill failed
+        # for the symbol, or ATR compute produced NaN and got dropped.
         logger.warning(
-            "No ATR seeded for %d symbol(s) -- RelATR will be null: %s",
+            "No ATR seeded for %d symbol(s) -- RelATR + DayAtrExt will be null: %s",
             len(missing_atr), ", ".join(missing_atr),
+        )
+    if missing_prev_close:
+        # DayAtrExt will be null for these symbols; RelATR may still fire.
+        logger.warning(
+            "No prev_close seeded for %d symbol(s) -- DayAtrExt will be null: %s",
+            len(missing_prev_close), ", ".join(missing_prev_close),
         )
 
 

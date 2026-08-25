@@ -60,11 +60,13 @@ class Bar(BaseModel):
     low: float
     close: float
     volume: int
-    # Indicator slots populated by calculations.py
+    # Indicator slots populated by SymbolSessionState.apply_bar via
+    # the shared `indicators` package.
     vwap: Optional[float] = None          # session-cumulative VWAP
     ema9: Optional[float] = None
     rvol_cum: Optional[float] = None
     relatr: Optional[float] = None
+    day_atr_ext: Optional[float] = None   # (prev_close - close) / atr
 
     @classmethod
     def from_incoming(cls, ib: IncomingBar, symbol: str, symbolid: int) -> "Bar":

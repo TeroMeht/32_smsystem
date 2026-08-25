@@ -44,7 +44,7 @@ from backend.database.writers import (
     record_backfill_run,
 )
 from backend.datapipe.calculations import rvol_baseline as rvol_model
-from backend.datapipe.calculations.calculations import calculate_atr_series
+from indicators.atr import atr_series
 from backend.datapipe.schemas import BAR_MINUTES, Bar, DailyBar, MonitoredSymbols
 from backend.datapipe.time_utils import previous_trading_day, session_date_et
 from data_sources._base import BarSize, HistoryWindow
@@ -237,7 +237,7 @@ async def _compute_daily_indicators(pool: asyncpg.Pool, today: date) -> None:
     Rebuild ``daily_indicators`` from whatever's currently in ``daily``.
 
     Reads every raw daily row in the retention window (one batched
-    query), groups by symbol in pandas, runs ``calculate_atr_series``
+    query), groups by symbol in pandas, runs ``indicators.atr.atr_series``
     per group, and bulk-upserts ``(symbolid, date, atr)`` into
     daily_indicators.
 
@@ -249,8 +249,10 @@ async def _compute_daily_indicators(pool: asyncpg.Pool, today: date) -> None:
 
     # ATR14 is stateful per symbol -- compute one group at a time.
     for _, grp in df.groupby("symbolid", sort=False):
-        enriched = calculate_atr_series(grp, span=settings.ATR_SAMPLE_SESSIONS)
-        df.loc[grp.index, "atr"] = enriched["atr"]
+        df.loc[grp.index, "atr"] = atr_series(
+            grp["high"], grp["low"], grp["close"],
+            span=settings.ATR_SAMPLE_SESSIONS,
+        )
 
     df.dropna(subset=["atr"], inplace=True)
     out = list(df[["symbolid", "date", "atr"]].itertuples(index=False, name=None))
