@@ -1,30 +1,31 @@
 """
-Live WS consumer for Massive/Polygon /stocks/AM.
+Live path orchestrator on top of the ``data_sources.polygon`` seam.
 
 Contract:
-  * Connect, auth, subscribe to AM.<sym> for every active monitored symbol.
-  * Every incoming message is validated as AggregateMinuteMessage, mapped
-    to a symbolid via the in-memory map, and passed through
-    ``bar_processor.process_bar``.
-  * Reconnect with exponential backoff on transport failures; each
-    reconnect re-subscribes to the current active set (in case the
-    universe was refreshed while we were down).
-  * Session boundary: the historian is called before we open the socket,
-    and ``empty_livestream_table`` runs then so livestream = today only.
+  * Seed per-symbol state (ATR + rvol baseline) and REST-prime today's
+    already-occurred bars via ``PolygonHistoricalSource``.
+  * Bulk-persist the primed bars into ``livestream``.
+  * Hand the WS to ``PolygonRealtimeSource.subscribe``; the adapter
+    handles connect / auth / subscribe / control-frame filtering, and
+    emits one ``IncomingBar`` per AM message to the ``on_bar`` callback
+    defined inside ``run_livestream``.
+  * ``on_bar`` wraps ``IncomingBar`` -> ``Bar`` via ``Bar.from_incoming``,
+    feeds the per-symbol ``BarAggregator``, and forwards each finalized
+    N-min bar to ``bar_processor.process_bar``.
+  * Session boundary: the historian is called before we open the
+    socket, and ``empty_livestream_table`` runs then so livestream =
+    today only.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Optional
 
 import asyncpg
-import websockets
 
-from backend.core.config import settings
 from backend.datapipe.runtime.aggregation import BarAggregator
 from backend.datapipe.runtime.bar_processor import BarSink, process_bar
 from backend.datapipe.runtime.priming import (
@@ -33,10 +34,15 @@ from backend.datapipe.runtime.priming import (
     seed_session_state,
 )
 from backend.datapipe.runtime.session_state import SessionStore
-from backend.datapipe.schemas import AggregateMinuteMessage, Bar, MonitoredSymbols
-from backend.datapipe.sources.datasource import fetch_intraday_bars
+from backend.datapipe.schemas import BAR_MINUTES, Bar, MonitoredSymbols
 from backend.datapipe.time_utils import session_date_et, to_helsinki
-from backend.dependencies import RestClient
+from data_sources._bar import IncomingBar
+from data_sources._base import BarSize, HistoryWindow
+from data_sources.polygon import (
+    PolygonHistoricalSource,
+    PolygonRealtimeSource,
+    PolygonSource,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,25 +50,33 @@ logger = logging.getLogger(__name__)
 
 
 async def _fetch_today_intraday_bars(
-    rest: RestClient,
+    polygon: PolygonSource,
     symbol_map: MonitoredSymbols,
     day: date,
     concurrency: int,
 ) -> list[tuple[str, int, list[Bar]]]:
     """
     REST-fetch today's already-occurred bars for every active symbol
-    with bounded parallelism. Returns ``(sym, sid, [bars])`` tuples in
-    the shape ``enrich_and_bulk_persist`` expects.
+    via the ``HistoricalSource`` seam, with bounded parallelism.
+    Returns ``(sym, sid, [bars])`` tuples in the shape
+    ``enrich_and_bulk_persist`` expects.
 
     Polygon serves bars at the aggregation cadence server-side
-    (BAR_MINUTES/minute); no client aggregation is needed here.
+    (BAR_MINUTES/minute); no client aggregation is needed.
     """
+    end_dt = datetime.combine(day, time(23, 59, 59), tzinfo=timezone.utc)
+    window = HistoryWindow(
+        bar_size      = BarSize(f"{BAR_MINUTES}m"),
+        lookback_days = 1,
+        end           = end_dt,
+    )
+    hist = PolygonHistoricalSource(polygon)
     sem = asyncio.Semaphore(concurrency)
 
     async def _fetch(sym: str, sid: int) -> tuple[str, int, list[Bar]]:
         async with sem:
-            raw = await fetch_intraday_bars(rest, sym, day)
-            return sym, sid, [b.to_bar(symbol=sym, symbolid=sid) for b in raw]
+            ibs = await hist.fetch(sym, window)
+            return sym, sid, [Bar.from_incoming(b, sym, sid) for b in ibs]
 
     return await asyncio.gather(*[
         _fetch(sym, sid) for sym, sid in symbol_map.items()
@@ -71,7 +85,7 @@ async def _fetch_today_intraday_bars(
 
 async def _initialize_livestream(
     pool: asyncpg.Pool,
-    rest: RestClient,
+    polygon: PolygonSource,
     store: SessionStore,
     symbol_map: MonitoredSymbols,
     concurrency: int = 10,
@@ -88,110 +102,63 @@ async def _initialize_livestream(
     today_et = session_date_et(datetime.now(timezone.utc))
     _, fetched = await asyncio.gather(
         seed_session_state(pool, store, symbol_map, today_et),
-        _fetch_today_intraday_bars(rest, symbol_map, today_et, concurrency), # Hakee Rest apista tämän päivän jo tapahtuneet barit samaan aikaan kun sessio alustetaan
+        _fetch_today_intraday_bars(polygon, symbol_map, today_et, concurrency),
     )
     enriched = enrich_prime_bars(store, fetched) # jatkojalostaa tämän päivän baarit
     await bulk_persist_bars(pool, enriched)
 
 
 
-def _parse_am_event(ev: dict, symbol_map: MonitoredSymbols) -> Optional[Bar]:
-    """
-    Filter to ``ev == "AM"``, validate the payload, resolve the symbolid,
-    return the canonical raw ``Bar``. Anything else returns ``None``.
-
-    Polygon sends non-AM control frames on the same stream:
-      * ``{"ev":"status","status":"auth_success",...}`` after auth
-      * ``{"ev":"status","status":"success","message":"subscribed to: AM.<sym>"}``
-        per subscribed symbol (so 1700+ of these right after subscribe)
-    These are handshake noise, not data -- log at DEBUG and skip.
-    """
-    if ev.get("ev") != "AM":
-        logger.debug("control frame: %s", ev)
-        return None
-    try:
-        msg = AggregateMinuteMessage.model_validate(ev)
-    except Exception:
-        logger.warning("AM validation failed: %s", ev)
-        return None
-    sid = symbol_map.get(msg.sym)
-    if sid is None:
-        return None
-    return msg.to_bar(symbolid=sid)
-
-
-async def _consume(
-    ws,
+async def run_livestream(
     pool: asyncpg.Pool,
-    store: SessionStore,
+    polygon: PolygonSource,
     symbol_map: MonitoredSymbols,
-    sink: Optional[BarSink],
+    sink: Optional[BarSink] = None,
 ) -> None:
     """
-    Drain frames from the socket. Each raw 1-min AM bar is aggregated
-    per symbol; the enriched N-min bar is enriched, persisted, and logged
-    once the window closes.
+    Boot the live path:
+      * seed per-symbol state (ATR + rvol baseline) + REST-prime
+        today's already-occurred bars in parallel,
+      * bulk-persist the primed bars into livestream,
+      * hand the socket to ``PolygonRealtimeSource.subscribe``.
+
+    ``on_bar`` (defined below) is the seam between the source-agnostic
+    ``IncomingBar`` the adapter emits and 32's canonical ``Bar`` the
+    aggregator + ``process_bar`` consume. The N-min ``BarAggregator``
+    stays on this side of the seam -- mirrors the IB pattern where the
+    adapter emits 5-sec bars and the consumer aggregates.
     """
-    aggregators: dict[str, BarAggregator] = {}
+    store = SessionStore()
+    try:
+        await _initialize_livestream(pool, polygon, store, symbol_map)
 
-    async for raw in ws:
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            logger.warning("non-JSON frame dropped: %r", raw[:200])
-            continue
+        aggregators: dict[str, BarAggregator] = {}
 
-        events = payload if isinstance(payload, list) else [payload]
-        for ev in events:
-            if not isinstance(ev, dict):
-                continue
-
-            raw_bar = _parse_am_event(ev, symbol_map)
-            if raw_bar is None:
-                continue
-
-            agg = aggregators.setdefault(raw_bar.symbol, BarAggregator())
+        async def on_bar(incoming: IncomingBar, symbol: str) -> None:
+            sid = symbol_map.get(symbol)
+            if sid is None:
+                return
+            raw_bar = Bar.from_incoming(incoming, symbol, sid)
+            agg = aggregators.setdefault(symbol, BarAggregator())
             bar = agg.feed(raw_bar)
             if bar is None:
-                # Window still filling -- wait for the next 1-min bar.
-                continue
-
+                return
             try:
                 await process_bar(pool, store, bar, sink=sink)
-                
                 logger.info(
                     "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d rvol=%s relatr=%s",
                     bar.symbol,
                     to_helsinki(bar.ts).strftime("%H:%M"),
                     bar.open, bar.high, bar.low, bar.close, bar.volume,
-                    f"{bar.rvol_cum:.2f}",
-                    f"{bar.relatr:.2f}"  ,
+                    f"{bar.rvol_cum:.2f}" if bar.rvol_cum is not None else "None",
+                    f"{bar.relatr:.2f}"   if bar.relatr   is not None else "None",
                 )
             except Exception:
                 logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)
 
-
-async def run_livestream(
-    pool: asyncpg.Pool,
-    rest: RestClient,
-    symbol_map: MonitoredSymbols,
-    sink: Optional[BarSink] = None,
-) -> None:
-
-    store = SessionStore()
-    url = settings.POLYGON_WS_URL
-
-    try:
-        await _initialize_livestream(pool, rest, store, symbol_map)
-
-        logger.info("Connecting to %s (%d symbols)", url, len(symbol_map))
-        async with websockets.connect(url, max_size=8 * 1024 * 1024) as ws:
-            await ws.send(json.dumps({"action": "auth", "params": settings.POLYGON_API_KEY}))
-            sub_params = ",".join(f"AM.{s}" for s in symbol_map.keys())
-            await ws.send(json.dumps({"action": "subscribe", "params": sub_params}))
-
-            await _consume(ws, pool, store, symbol_map, sink)
-
+        await PolygonRealtimeSource(polygon).subscribe(
+            list(symbol_map.keys()), on_bar,
+        )
         logger.warning("Socket closed -- run_livestream returning")
 
     except asyncio.CancelledError:

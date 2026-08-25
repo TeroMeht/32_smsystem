@@ -1,37 +1,34 @@
 """
-Typed data models for every bar shape crossing a module boundary.
+Typed data models for the shapes crossing internal module boundaries.
 
-Three shapes to be aware of:
+Two shapes to be aware of:
 
-  * ``AggregateMinuteMessage``  -- raw WS /stocks/AM payload from Massive.
-                                    Field names match the API exactly (short
-                                    keys: ev, sym, o, c, h, l, v, s, e, ...).
-  * ``RestAggregateBar``        -- one entry of ``results[]`` from the REST
-                                    /v2/aggs/... endpoint. Same short keys
-                                    (t, o, h, l, c, v, vw, n).
-  * ``Bar``                   -- the *canonical* bar the rest of the
-                                    system consumes. Explicit field names,
-                                    tz-aware UTC timestamp, symbolid resolved.
+  * ``Bar``       -- the *canonical* intraday bar the rest of the system
+                     consumes. Explicit field names, tz-aware UTC
+                     timestamp, symbolid resolved.
+  * ``DailyBar``  -- one raw daily OHLCV row for the ``daily`` table.
 
-Adapters (``AggregateMinuteMessage.to_bar`` / ``RestAggregateBar.to_bar``)
-turn the raw shapes into the canonical shape. Everything downstream of the
-adapter is Bar only -- calculations, DB writer, and strategies never touch
-the raw API dicts.
+Wire-format shapes (Polygon REST results / WS /stocks/AM payloads) live
+inside ``data_sources.polygon`` -- consumers never see them. The polygon
+adapter emits ``IncomingBar`` at the seam; the ``from_incoming``
+classmethods below wrap those into ``Bar`` / ``DailyBar`` in one line at
+the two callers that need them (livestream + historian).
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from data_sources._bar import IncomingBar
+from pydantic import BaseModel, ConfigDict
 
 
 # ---------------------------------------------------------------------------
 # System-wide bar cadence
 # ---------------------------------------------------------------------------
 # Single source of truth for the aggregation window (minutes). Read by:
-#   * sources.rest_client -- builds Polygon URL ``/range/N/minute/...``
+#   * data_sources.polygon._source -- builds Polygon URL ``/range/N/minute/...``
 #   * runtime.aggregation -- WS-side 1-min -> N-min bucketing
 #   * rvol_baseline SQL   -- generates the 24h Helsinki slot grid
 # Fixed at 2 for now; promote to settings if it ever needs to vary.
@@ -45,18 +42,19 @@ BAR_MINUTES = 2
 
 class Bar(BaseModel):
     """
-    A validated 1-min OHLCV bar with indicator slots.
+    A validated N-min OHLCV bar with indicator slots.
 
-    Persisted directly to ``livestream`` (indicator columns filled) and to
-    ``intraday_bars`` (indicator columns dropped -- history table only stores
-    the raw OHLCV). ``ts`` is always UTC tz-aware, matching timestamptz.
+    Persisted directly to ``livestream`` (indicator columns filled) and
+    to ``intraday_bars`` (indicator columns dropped -- history table
+    only stores the raw OHLCV). ``ts`` is always UTC tz-aware, matching
+    timestamptz.
     """
 
     model_config = ConfigDict(frozen=False)
 
     symbol: str
     symbolid: int
-    ts: datetime  # UTC, tz-aware -- window start (Polygon `s`)
+    ts: datetime  # UTC, tz-aware -- window start
     open: float
     high: float
     low: float
@@ -68,95 +66,24 @@ class Bar(BaseModel):
     rvol_cum: Optional[float] = None
     relatr: Optional[float] = None
 
-
-# ---------------------------------------------------------------------------
-# WebSocket payload -- Massive /stocks/AM
-# ---------------------------------------------------------------------------
-
-
-class AggregateMinuteMessage(BaseModel):
-    """
-    One incoming WS /stocks/AM message. Field names mirror the API exactly.
-
-    We tolerate unknown fields (``extra="ignore"``) because Massive can add
-    non-critical fields without breaking us.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    ev: str = Field(..., description="Event type, always 'AM' here")
-    sym: str
-    o: float
-    h: float
-    l: float
-    c: float
-    v: int
-    s: int = Field(..., description="Window start, unix ms")
-    e: int = Field(..., description="Window end, unix ms")
-    vw: Optional[float] = None
-    av: Optional[int] = None
-    op: Optional[float] = None
-    a: Optional[float] = None
-    z: Optional[int] = None
-    otc: Optional[bool] = None
-
-    def to_bar(self, symbolid: int) -> Bar:
-        """Convert to canonical bar. Requires symbolid resolved by caller."""
-        return Bar(
-            symbol=self.sym,
-            symbolid=symbolid,
-            ts=datetime.fromtimestamp(self.s / 1000, tz=timezone.utc),
-            open=self.o,
-            high=self.h,
-            low=self.l,
-            close=self.c,
-            volume=self.v,
+    @classmethod
+    def from_incoming(cls, ib: IncomingBar, symbol: str, symbolid: int) -> "Bar":
+        """
+        Wrap an ``IncomingBar`` from the data_sources seam into a
+        canonical ``Bar``. ``IncomingBar.date`` is expected to be a
+        tz-aware UTC datetime (both PolygonHistoricalSource and
+        PolygonRealtimeSource emit it that way).
+        """
+        return cls(
+            symbol   = symbol,
+            symbolid = symbolid,
+            ts       = ib.date,
+            open     = float(ib.open),
+            high     = float(ib.high),
+            low      = float(ib.low),
+            close    = float(ib.close),
+            volume   = int(ib.volume),
         )
-
-
-# ---------------------------------------------------------------------------
-# REST payload -- one entry of results[] from /v2/aggs/.../range/1/minute/...
-# ---------------------------------------------------------------------------
-
-
-class RestAggregateBar(BaseModel):
-    """One row from the REST aggregates endpoint. Field names mirror the API."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    t: int = Field(..., description="Window start, unix ms")
-    o: float
-    h: float
-    l: float
-    c: float
-    v: float  # REST returns numeric (can be fractional for OTC); we cast to int
-    vw: Optional[float] = None
-    n: Optional[int] = None
-
-    def to_bar(self, symbol: str, symbolid: int) -> Bar:
-        return Bar(
-            symbol=symbol,
-            symbolid=symbolid,
-            ts=datetime.fromtimestamp(self.t / 1000, tz=timezone.utc),
-            open=self.o,
-            high=self.h,
-            low=self.l,
-            close=self.c,
-            volume=int(self.v),
-        )
-
-
-class RestAggregateResponse(BaseModel):
-    """Full response shape from /v2/aggs/.../range/... -- used for validation."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    ticker: Optional[str] = None
-    adjusted: Optional[bool] = None
-    status: str
-    results: list[RestAggregateBar] = Field(default_factory=list)
-    resultsCount: int = 0
-    next_url: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +109,25 @@ class DailyBar(BaseModel):
     low: float
     close: float
     volume: int
+
+    @classmethod
+    def from_incoming(cls, ib: IncomingBar, symbol: str, symbolid: int) -> "DailyBar":
+        """
+        Wrap an ``IncomingBar`` from the data_sources seam into a
+        ``DailyBar``. ``IncomingBar.date`` is a tz-aware UTC datetime;
+        we keep only the date portion (Polygon daily bars are
+        session-dated at midnight UTC).
+        """
+        return cls(
+            symbol   = symbol,
+            symbolid = symbolid,
+            d        = ib.date.date(),
+            open     = float(ib.open),
+            high     = float(ib.high),
+            low      = float(ib.low),
+            close    = float(ib.close),
+            volume   = int(ib.volume),
+        )
 
 
 # ---------------------------------------------------------------------------

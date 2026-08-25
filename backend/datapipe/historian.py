@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import asyncpg
 import pandas as pd
@@ -45,13 +45,10 @@ from backend.database.writers import (
 )
 from backend.datapipe.calculations import rvol_baseline as rvol_model
 from backend.datapipe.calculations.calculations import calculate_atr_series
-from backend.datapipe.schemas import Bar, DailyBar, MonitoredSymbols
-from backend.datapipe.sources.datasource import (
-    fetch_daily_bars_range,
-    fetch_intraday_bars_range,
-)
+from backend.datapipe.schemas import BAR_MINUTES, Bar, DailyBar, MonitoredSymbols
 from backend.datapipe.time_utils import previous_trading_day, session_date_et
-from backend.dependencies import RestClient
+from data_sources._base import BarSize, HistoryWindow
+from data_sources.polygon import PolygonHistoricalSource, PolygonSource
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +59,14 @@ logger = logging.getLogger(__name__)
 
 
 async def _backfill_daily_for_symbol(
-    rest: RestClient,
+    polygon: PolygonSource,
     symbol: str,
     symbolid: int,
     up_to: date,
 ) -> list[DailyBar]:
     """
-    Fetch raw daily OHLCV bars from Polygon.
+    Fetch raw daily OHLCV bars from Polygon via the source-agnostic
+    ``HistoricalSource`` seam.
 
     Always fetches the full DAILY_BACKFILL_DAYS window (with a 2x
     calendar buffer for weekends/holidays) because the later ATR14
@@ -78,39 +76,38 @@ async def _backfill_daily_for_symbol(
     live in ``daily_indicators`` and are populated by
     ``_compute_daily_indicators`` after the raw daily inserts finish.
     """
-    start = up_to - timedelta(days=settings.DAILY_BACKFILL_DAYS * 2)
-    raw = await fetch_daily_bars_range(rest, symbol, start_day=start, end_day=up_to)
-    if not raw:
-        return []
-    return [
-        DailyBar(
-            symbol   = symbol,
-            symbolid = symbolid,
-            d        = datetime.fromtimestamp(b.t / 1000, tz=timezone.utc).date(),
-            open     = float(b.o),
-            high     = float(b.h),
-            low      = float(b.l),
-            close    = float(b.c),
-            volume   = int(b.v),
-        )
-        for b in raw
-    ]
+    lookback = settings.DAILY_BACKFILL_DAYS * 2
+    end_dt = datetime.combine(up_to, time(23, 59, 59), tzinfo=timezone.utc)
+    window = HistoryWindow(
+        bar_size      = BarSize.DAILY,
+        lookback_days = lookback,
+        end           = end_dt,
+    )
+    ibs = await PolygonHistoricalSource(polygon).fetch(symbol, window)
+    return [DailyBar.from_incoming(b, symbol, symbolid) for b in ibs]
 
 
 async def _backfill_intraday_for_symbol(
-    rest: RestClient,
+    polygon: PolygonSource,
     symbol: str,
     symbolid: int,
     start_day: date,
     end_day: date,
 ) -> list[Bar]:
     """
-    Fetch aggregation-cadence bars (BAR_MINUTES/minute) directly from
-    Polygon. Polygon does the aggregation server-side, so no client
-    batching is needed here.
+    Fetch aggregation-cadence bars (BAR_MINUTES/minute) via the
+    ``HistoricalSource`` seam. Polygon does the aggregation
+    server-side, so no client batching is needed here.
     """
-    raw = await fetch_intraday_bars_range(rest, symbol, start_day, end_day)
-    return [b.to_bar(symbol=symbol, symbolid=symbolid) for b in raw]
+    lookback = (end_day - start_day).days + 1
+    end_dt = datetime.combine(end_day, time(23, 59, 59), tzinfo=timezone.utc)
+    window = HistoryWindow(
+        bar_size      = BarSize(f"{BAR_MINUTES}m"),
+        lookback_days = lookback,
+        end           = end_dt,
+    )
+    ibs = await PolygonHistoricalSource(polygon).fetch(symbol, window)
+    return [Bar.from_incoming(b, symbol, symbolid) for b in ibs]
 
 
 # ============================================================================
@@ -120,7 +117,7 @@ async def _backfill_intraday_for_symbol(
 
 async def _run_backfill_workers(
     pool: asyncpg.Pool,
-    rest: RestClient,
+    polygon: PolygonSource,
     today: date,
     daily_end: date,
     intraday_end: date,
@@ -182,7 +179,7 @@ async def _run_backfill_workers(
     async def _do_daily(symbol: str, symbolid: int) -> None:
         async with sem:
             try:
-                daily_all = await _backfill_daily_for_symbol(rest, symbol, symbolid, daily_end)
+                daily_all = await _backfill_daily_for_symbol(polygon, symbol, symbolid, daily_end)
                 daily = [b for b in daily_all if b.d >= daily_cutoff]
                 if daily:
                     for d in {b.d for b in daily}:
@@ -199,7 +196,7 @@ async def _run_backfill_workers(
         async with sem:
             try:
                 intraday_all = await _backfill_intraday_for_symbol(
-                    rest, symbol, symbolid, need_from, intraday_end,
+                    polygon, symbol, symbolid, need_from, intraday_end,
                 )
                 intraday = [
                     b for b in intraday_all
@@ -297,7 +294,7 @@ async def _rebuild_rvol_model(
 
 async def backfill_all_symbols(
     pool: asyncpg.Pool,
-    rest: RestClient,
+    polygon: PolygonSource,
     today: date,
     symbol_map: MonitoredSymbols,
     *,
@@ -345,7 +342,7 @@ async def backfill_all_symbols(
 
     # 3. Fetch + insert raw bars.
     daily_rows, intraday_rows = await _run_backfill_workers(
-        pool, rest, today, daily_end, intraday_end,
+        pool, polygon, today, daily_end, intraday_end,
         daily_todo, intraday_todo, concurrency,
     )
 

@@ -17,7 +17,7 @@ but never emitted alone -- if the session ends on an odd minute, that
 last minute is dropped.
 
 Cadence is set by ``BAR_MINUTES`` in ``datapipe.schemas`` -- the same
-constant used by ``sources.rest_client`` to build the REST URL, so the
+constant used by ``data_sources.polygon._source`` to build the REST URL, so the
 whole system agrees on the window size.
 """
 

@@ -4,17 +4,17 @@ FastAPI entrypoint and composition root.
 This file is the ONLY place where long-lived infra resources are created
 and destroyed:
 
-  * DB pool     -- create_db_pool()   / pool.close()
-  * REST client -- create_rest_client() / rest.session.close()
+  * DB pool        -- create_db_pool() / pool.close()
+  * Polygon source -- create_polygon()  / close_polygon(source)
 
 Both are stashed on ``app.state`` so any route can reach them via the
-``get_pool`` / ``get_rest`` ``Depends`` helpers in
+``get_pool`` / ``get_polygon`` ``Depends`` helpers in
 ``backend.dependencies``. Nothing lives at module scope -- the
 lifespan's locals are the single source of truth, and both resources
 are torn down in the lifespan's ``finally`` block regardless of whether
 startup succeeded.
 
-The datapipe is pure orchestration -- ``pipeline.startup(app, pool, rest)``
+The datapipe is pure orchestration -- ``pipeline.startup(app, pool, polygon)``
 receives the infra as arguments and only owns the background livestream
 task (stashed on ``app.state.live_task``).
 
@@ -36,7 +36,7 @@ from starlette.responses import Response
 
 from backend.common.logging_config import setup_app_logging
 from backend.datapipe import pipeline
-from backend.dependencies import create_db_pool, create_rest_client
+from backend.dependencies import close_polygon, create_db_pool, create_polygon
 from backend.routers import livestream as livestream_routes
 from backend.routers import pages as pages_routes
 
@@ -66,12 +66,12 @@ async def lifespan(app: FastAPI):
     # the sharing surface for route handlers -- the datapipe still
     # receives explicit parameters.
     pool = await create_db_pool()
-    rest = await create_rest_client()
+    polygon = await create_polygon()
     app.state.pool = pool
-    app.state.rest = rest
+    app.state.polygon = polygon
 
     try:
-        await pipeline.startup(app, pool, rest)
+        await pipeline.startup(app, pool, polygon)
         # Print the dashboard URL once the datapipe is up. Reads HOST/PORT
         # from the environment (set by start.bat) with 127.0.0.1:8000
         # defaults, so a manual `uvicorn --port 8001` invocation should
@@ -83,8 +83,7 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("32_smsystem shutting down")
         await pipeline.shutdown(app)   # cancels the background task only
-        if not rest.session.closed:
-            await rest.session.close()
+        await close_polygon(polygon)
         await pool.close()
         logger.info("32_smsystem shutdown complete")
 
