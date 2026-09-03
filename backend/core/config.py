@@ -37,6 +37,7 @@ class Settings(PolygonSourceConfig, BaseSettings):
     DAILY_BACKFILL_DAYS:    int
     RVOL_SAMPLE_SESSIONS:   int
     ATR_SAMPLE_SESSIONS:    int
+    SMA200_SAMPLE_SESSIONS: int
 
     class Config:
         ENV_REPO = Path("C:/codebase/env-repo")

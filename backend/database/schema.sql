@@ -79,13 +79,16 @@ CREATE TABLE daily_20260807 PARTITION OF daily
 
 
 -- 4b. daily_indicators (calculated fields keyed to the daily grid)
--- Same partitioning + retention as ``daily``; historian computes ATR14 in
--- a separate pass (read daily -> pandas -> insert daily_indicators) so
--- ``daily`` stays raw-only.
+-- Same partitioning + retention as ``daily``; historian computes ATR14 and
+-- SMA200 in a separate pass (read daily -> pandas -> insert daily_indicators)
+-- so ``daily`` stays raw-only. ``sma200`` requires >= 200 sessions of daily
+-- history on disk, which is why ``DAILY_BACKFILL_DAYS`` sits at ~280 calendar
+-- days (~200 trading days plus a weekend/holiday buffer).
 CREATE TABLE daily_indicators (
     symbolid  integer      NOT NULL REFERENCES monitored_symbols(symbolid),
     date      date         NOT NULL,
     atr       numeric(12,4),
+    sma200    numeric(12,4),
     updated   timestamptz  NOT NULL DEFAULT now(),
     PRIMARY KEY (symbolid, date)
 ) PARTITION BY RANGE (date);

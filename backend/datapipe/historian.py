@@ -36,7 +36,7 @@ from backend.database.partitions import (
     ensure_partition_intraday,
     ensure_partitions_for_dates,
 )
-from backend.database.readers import load_daily_for_atr_compute
+from backend.database.readers import load_daily_for_indicators_compute
 from backend.database.writers import (
     bulk_insert_daily_bars,
     bulk_insert_daily_indicators,
@@ -45,6 +45,7 @@ from backend.database.writers import (
 )
 from backend.datapipe.calculations import rvol_baseline as rvol_model
 from indicators.atr import atr_series
+from indicators.sma import sma_series
 from backend.datapipe.schemas import (
     BAR_MINUTES,
     CandleRow,
@@ -62,35 +63,6 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Per-symbol fetch primitives
 # ============================================================================
-
-
-async def _backfill_daily_for_symbol(
-    polygon: PolygonSource,
-    symbol: str,
-    symbolid: int,
-    up_to: date,
-) -> list[DailyBar]:
-    """
-    Fetch raw daily OHLCV bars from Polygon via the source-agnostic
-    ``HistoricalSource`` seam.
-
-    Always fetches the full DAILY_BACKFILL_DAYS window (with a 2x
-    calendar buffer for weekends/holidays) because the later ATR14
-    compute pass needs 14 trading days of context per symbol.
-
-    Returned DailyBars are RAW ONLY -- no ATR / derived fields. Those
-    live in ``daily_indicators`` and are populated by
-    ``_compute_daily_indicators`` after the raw daily inserts finish.
-    """
-    lookback = settings.DAILY_BACKFILL_DAYS * 2
-    end_dt = datetime.combine(up_to, time(23, 59, 59), tzinfo=timezone.utc)
-    window = HistoryWindow(
-        bar_size      = BarSize.DAILY,
-        lookback_days = lookback,
-        end           = end_dt,
-    )
-    ibs = await PolygonHistoricalSource(polygon).fetch(symbol, window)
-    return [DailyBar.from_incoming(b, symbol, symbolid) for b in ibs]
 
 
 async def _backfill_intraday_for_symbol(
@@ -117,88 +89,147 @@ async def _backfill_intraday_for_symbol(
 
 
 # ============================================================================
+# Grouped-daily bulk seed (deep-history fetch for ``daily``)
+# ============================================================================
+
+
+async def _bulk_backfill_daily_grouped(
+    pool: asyncpg.Pool,
+    polygon: PolygonSource,
+    symbol_map: MonitoredSymbols,
+    start_day: date,
+    end_day: date,
+    concurrency: int,
+) -> int:
+    """
+    Seed the ``daily`` table for every active symbol using Polygon's
+    grouped-daily endpoint. One HTTP call per trading day returns
+    OHLCV for the ENTIRE US stock market, so a 200-session backfill
+    across ~1,500 active symbols costs ~200 HTTP calls (one per
+    calendar day in the window, weekends/holidays skipped by
+    Polygon returning an empty ``results``) instead of ~1,500 (one
+    per symbol at the per-symbol REST path).
+
+    Calendar days in ``[start_day, end_day]`` are all requested;
+    non-trading days simply return zero rows and cost one no-op
+    call. Rows are filtered to the ``symbol_map`` (only active
+    monitored symbols) before insert; the ``T`` (ticker) field is
+    resolved to ``symbolid`` via the map.
+
+    Concurrency is capped by ``concurrency`` so we don't stampede
+    the polygon session. Returns the total rows inserted across all
+    days.
+    """
+    sym_to_id = symbol_map  # {symbol: symbolid}
+    keep      = sym_to_id.keys()
+
+    calendar_days: list[date] = []
+    d = start_day
+    while d <= end_day:
+        calendar_days.append(d)
+        d += timedelta(days=1)
+
+    sem      = asyncio.Semaphore(concurrency)
+    counters = {"days_with_data": 0, "rows": 0, "errors": 0}
+    total    = len(calendar_days)
+    done     = 0
+    step     = max(1, total // 10)
+
+    src = PolygonHistoricalSource(polygon)
+
+    async def _do_day(day: date) -> None:
+        nonlocal done
+        async with sem:
+            try:
+                results = await src.fetch_grouped_day(day)
+            except Exception:
+                counters["errors"] += 1
+                logger.exception("grouped-daily fetch failed for %s", day)
+                results = []
+
+            bars: list[DailyBar] = []
+            for r in results:
+                sym = r.get("T")
+                if sym not in keep:
+                    continue
+                try:
+                    bars.append(DailyBar(
+                        symbol   = sym,
+                        symbolid = sym_to_id[sym],
+                        d        = day,
+                        open     = float(r["o"]),
+                        high     = float(r["h"]),
+                        low      = float(r["l"]),
+                        close    = float(r["c"]),
+                        volume   = int(r["v"]),
+                    ))
+                except (KeyError, TypeError, ValueError):
+                    # Illiquid rows Polygon returns without ohlcv or with weird
+                    # types -- skip rather than fail the whole day.
+                    continue
+
+            if bars:
+                await ensure_partition_daily(pool, day)
+                await bulk_insert_daily_bars(pool, bars)
+                counters["days_with_data"] += 1
+                counters["rows"]           += len(bars)
+
+            done += 1
+            if done % step == 0 or done == total:
+                logger.info(
+                    "Grouped-daily progress: %d/%d days (rows= %d, trading_days= %d, errors= %d)",
+                    done, total,
+                    counters["rows"], counters["days_with_data"], counters["errors"],
+                )
+
+    logger.info(
+        "Grouped-daily bulk seed: %d calendar days (%s..%s) for %d symbols",
+        total, start_day.isoformat(), end_day.isoformat(), len(sym_to_id),
+    )
+    await asyncio.gather(*(_do_day(d) for d in calendar_days))
+    logger.info(
+        "Grouped-daily bulk seed complete -- %d rows over %d trading days (%d errors)",
+        counters["rows"], counters["days_with_data"], counters["errors"],
+    )
+    return counters["rows"]
+
+
+# ============================================================================
 # Bounded-concurrency worker pool
 # ============================================================================
 
 
-async def _run_backfill_workers(
+async def _run_intraday_workers(
     pool: asyncpg.Pool,
     polygon: PolygonSource,
     today: date,
-    daily_end: date,
     intraday_end: date,
-    daily_todo: list[tuple[str, int]],
     intraday_todo: list[tuple[str, int, date]],
     concurrency: int,
-) -> tuple[int, int]:
+) -> int:
     """
-    Run the two work lists through a bounded semaphore. Each list is
-    independent; we schedule both as one flat coroutine set so the
-    concurrency limit applies to the total in-flight REST calls.
+    Per-symbol intraday backfill worker pool.
 
-    ``daily_end`` and ``intraday_end`` are the inclusive upper bounds of
-    the REST fetches for each side (see caller for the ``today - 1`` /
-    ``previous_trading_day(today)`` rationale).
+    Polygon has no grouped endpoint at the intraday cadence, so this
+    side stays per-symbol; the daily side moved to the grouped-daily
+    bulk seed in ``_bulk_backfill_daily_grouped``.
 
-    Returns ``(daily_rows_added, intraday_rows_added)`` so the caller
-    can decide whether the derived-data compute passes need to run.
+    Returns the total intraday rows written so the caller can decide
+    whether the rvol_baseline rebuild pass needs to run.
     """
-    if not daily_todo and not intraday_todo:
-        return 0, 0
+    if not intraday_todo:
+        return 0
 
-    daily_cutoff    = today - timedelta(days=settings.DAILY_BACKFILL_DAYS    - 1)
     intraday_cutoff = today - timedelta(days=settings.INTRADAY_BACKFILL_DAYS - 1)
-
     sem = asyncio.Semaphore(concurrency)
-    counters = {"daily_rows": 0, "intraday_rows": 0,
-                "daily_errors": 0, "intraday_errors": 0}
+    counters = {"rows": 0, "errors": 0}
 
-    # Independent progress counters per side, each with its own ~10% step
-    # so the two streams log separately even though they run interleaved.
-    daily_total    = len(daily_todo)
-    intraday_total = len(intraday_todo)
-    daily_done     = 0
-    intraday_done  = 0
-    daily_step     = max(1, daily_total    // 10) if daily_total    else 1
-    intraday_step  = max(1, intraday_total // 10) if intraday_total else 1
-
-    def _tick_daily() -> None:
-        nonlocal daily_done
-        daily_done += 1
-        if daily_done % daily_step == 0 or daily_done == daily_total:
-            logger.info(
-                "Daily backfill progress: %d/%d symbols (rows= %d errors= %d)",
-                daily_done, daily_total,
-                counters["daily_rows"], counters["daily_errors"],
-            )
-
-    def _tick_intraday() -> None:
-        nonlocal intraday_done
-        intraday_done += 1
-        if intraday_done % intraday_step == 0 or intraday_done == intraday_total:
-            logger.info(
-                "Intraday backfill progress: %d/%d symbols (rows= %d errors= %d)",
-                intraday_done, intraday_total,
-                counters["intraday_rows"], counters["intraday_errors"],
-            )
-
-    async def _do_daily(symbol: str, symbolid: int) -> None:
-        async with sem:
-            try:
-                daily_all = await _backfill_daily_for_symbol(polygon, symbol, symbolid, daily_end)
-                daily = [b for b in daily_all if b.d >= daily_cutoff]
-                if daily:
-                    for d in {b.d for b in daily}:
-                        await ensure_partition_daily(pool, d)
-                    await bulk_insert_daily_bars(pool, daily)
-                    counters["daily_rows"] += len(daily)
-            except Exception:
-                counters["daily_errors"] += 1
-                logger.exception("%s: daily backfill failed", symbol)
-            finally:
-                _tick_daily()
+    total = len(intraday_todo)
+    done  = 0
+    step  = max(1, total // 10)
 
     async def _do_intraday(symbol: str, symbolid: int, need_from: date) -> None:
+        nonlocal done
         async with sem:
             try:
                 intraday_all = await _backfill_intraday_for_symbol(
@@ -212,25 +243,24 @@ async def _run_backfill_workers(
                     for d in {session_date_et(b.ts) for b in intraday}:
                         await ensure_partition_intraday(pool, d)
                     await bulk_insert_intraday_bars(pool, intraday)
-                    counters["intraday_rows"] += len(intraday)
+                    counters["rows"] += len(intraday)
             except Exception:
-                counters["intraday_errors"] += 1
+                counters["errors"] += 1
                 logger.exception("%s: intraday backfill failed", symbol)
             finally:
-                _tick_intraday()
+                done += 1
+                if done % step == 0 or done == total:
+                    logger.info(
+                        "Intraday backfill progress: %d/%d symbols (rows= %d errors= %d)",
+                        done, total, counters["rows"], counters["errors"],
+                    )
 
-    tasks = (
-        [_do_daily(s, sid) for s, sid in daily_todo]
-        + [_do_intraday(s, sid, nf) for s, sid, nf in intraday_todo]
-    )
-    await asyncio.gather(*tasks)
-
+    await asyncio.gather(*(_do_intraday(s, sid, nf) for s, sid, nf in intraday_todo))
     logger.info(
-        "Backfilling complete -- daily: %d rows / %d errors, intraday: %d rows / %d errors",
-        counters["daily_rows"],    counters["daily_errors"],
-        counters["intraday_rows"], counters["intraday_errors"],
+        "Intraday backfilling complete -- %d rows / %d errors",
+        counters["rows"], counters["errors"],
     )
-    return counters["daily_rows"], counters["intraday_rows"]
+    return counters["rows"]
 
 
 # ============================================================================
@@ -243,37 +273,66 @@ async def _compute_daily_indicators(pool: asyncpg.Pool, today: date) -> None:
     Rebuild ``daily_indicators`` from whatever's currently in ``daily``.
 
     Reads every raw daily row in the retention window (one batched
-    query), groups by symbol in pandas, runs ``indicators.atr.atr_series``
-    per group, and bulk-upserts ``(symbolid, date, atr)`` into
-    daily_indicators.
+    query), groups by symbol in pandas, and computes:
+
+      * ATR14  via ``indicators.atr.atr_series``  (needs 14 sessions warm-up)
+      * SMA200 via ``indicators.sma.sma_series``  (needs 200 sessions warm-up)
+
+    Bulk-upserts ``(symbolid, date, atr, sma200)`` into daily_indicators.
+    Either indicator may be ``None`` on a per-row basis when its
+    warm-up window isn't satisfied; a row is written as long as at
+    least one indicator resolved (so partial history still feeds ATR-
+    only strategies while SMA200 is still warming up).
 
     Runs AFTER the raw daily inserts completed so the compute sees the
     freshest data. Partitions for the target dates are ensured up front.
     """
     since = today - timedelta(days=settings.DAILY_BACKFILL_DAYS - 1)
-    df = await load_daily_for_atr_compute(pool, since)
+    df = await load_daily_for_indicators_compute(pool, since)
 
-    # ATR14 is stateful per symbol -- compute one group at a time.
+    if df.empty:
+        logger.info("daily_indicators: no daily rows in window -- nothing to compute")
+        return
+
+    # ATR14 + SMA200 are both stateful per symbol -- compute one group at a time.
+    df["atr"]    = pd.NA
+    df["sma200"] = pd.NA
     for _, grp in df.groupby("symbolid", sort=False):
         df.loc[grp.index, "atr"] = atr_series(
             grp["high"], grp["low"], grp["close"],
             span=settings.ATR_SAMPLE_SESSIONS,
         )
+        df.loc[grp.index, "sma200"] = sma_series(
+            grp["close"],
+            period=settings.SMA200_SAMPLE_SESSIONS,
+        )
 
-    df.dropna(subset=["atr"], inplace=True)
-    out = list(df[["symbolid", "date", "atr"]].itertuples(index=False, name=None))
-
-    if not out:
-        logger.info("daily_indicators: no ATR values produced -- nothing to write")
+    # Drop rows where BOTH indicators are still warming up -- nothing to persist.
+    df = df.dropna(subset=["atr", "sma200"], how="all")
+    if df.empty:
+        logger.info("daily_indicators: no indicator values produced -- nothing to write")
         return
+
+    # Cast pandas NA -> Python None so asyncpg encodes them as SQL NULL.
+    out = [
+        (
+            int(r.symbolid),
+            r.date,
+            None if pd.isna(r.atr)    else float(r.atr),
+            None if pd.isna(r.sma200) else float(r.sma200),
+        )
+        for r in df.itertuples(index=False)
+    ]
 
     for d in {row[1] for row in out}:
         await ensure_partition_daily_indicators(pool, d)
 
     await bulk_insert_daily_indicators(pool, out)
+    sma_rows = sum(1 for row in out if row[3] is not None)
     logger.info(
-        "daily_indicators: wrote %d rows across %d symbols",
-        len(out), df["symbolid"].nunique(),
+        "daily_indicators: wrote %d rows across %d symbols "
+        "(SMA200 populated on %d rows)",
+        len(out), df["symbolid"].nunique(), sma_rows,
     )
 
 
@@ -337,21 +396,34 @@ async def backfill_all_symbols(
     await ensure_partitions_for_dates(pool, intraday_days, daily_days)
 
     # 2. Build the todo lists.
+    #    Daily side goes through the grouped-daily bulk seed, so no
+    #    per-symbol daily todo list is needed here.
     intraday_start = today - timedelta(days=settings.INTRADAY_BACKFILL_DAYS)
     intraday_end   = today - timedelta(days=1)
     daily_end      = previous_trading_day(today)
+    daily_start    = today - timedelta(days=settings.DAILY_BACKFILL_DAYS - 1)
 
-    daily_todo:    list[tuple[str, int]]       = (
-        [(sym, sid) for sym, sid in symbol_map.items()] if need_daily else []
-    )
     intraday_todo: list[tuple[str, int, date]] = (
         [(sym, sid, intraday_start) for sym, sid in symbol_map.items()] if need_intraday else []
     )
 
-    # 3. Fetch + insert raw bars.
-    daily_rows, intraday_rows = await _run_backfill_workers(
-        pool, polygon, today, daily_end, intraday_end,
-        daily_todo, intraday_todo, concurrency,
+    # 3a. Daily bulk seed (grouped-daily -- one call per trading day for the
+    #     whole US market, ~200 calls to cover ~200 sessions for every
+    #     active symbol, vs ~1,500 per-symbol calls at the per-symbol path).
+    daily_rows = 0
+    if need_daily:
+        daily_rows = await _bulk_backfill_daily_grouped(
+            pool, polygon, symbol_map,
+            start_day=daily_start,
+            end_day=daily_end,
+            concurrency=concurrency,
+        )
+
+    # 3b. Intraday worker pool (still per-symbol -- Polygon has no grouped
+    #     endpoint at the intraday cadence).
+    intraday_rows = await _run_intraday_workers(
+        pool, polygon, today, intraday_end,
+        intraday_todo=intraday_todo, concurrency=concurrency,
     )
 
     # 4. Derived-data compute passes (only if new raw data landed).

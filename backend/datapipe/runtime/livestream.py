@@ -43,6 +43,7 @@ from backend.datapipe.schemas import (
 from backend.datapipe.time_utils import session_date_et, to_helsinki
 from data_sources._bar import IncomingBar
 from data_sources._base import BarSize, HistoryWindow
+from data_sources._errors import SourceUnauthorized
 from data_sources.polygon import (
     PolygonHistoricalSource,
     PolygonRealtimeSource,
@@ -51,6 +52,16 @@ from data_sources.polygon import (
 
 logger = logging.getLogger(__name__)
 
+
+# Reconnect policy for the Polygon WS. The socket is expected to
+# survive a full trading session, but any transient network hiccup
+# (Windows semaphore timeout, DNS blip, Polygon-side restart) closes
+# it -- we back off and reconnect rather than letting the task exit.
+# Exponential backoff from 1s to 60s; the 'connected long enough'
+# threshold below resets it after a healthy reconnect.
+_WS_BACKOFF_START_S = 1.0
+_WS_BACKOFF_MAX_S = 60.0
+_WS_HEALTHY_S = 60.0
 
 
 
@@ -162,10 +173,39 @@ async def run_livestream(
             except Exception:
                 logger.exception("process_bar failed for %s @ %s", bar.symbol, bar.ts)
 
-        await PolygonRealtimeSource(polygon).subscribe(
-            list(symbol_map.keys()), on_bar,
-        )
-        logger.warning("Socket closed -- run_livestream returning")
+        realtime = PolygonRealtimeSource(polygon)
+        symbols = list(symbol_map.keys())
+        backoff = _WS_BACKOFF_START_S
+        while True:
+            t0 = asyncio.get_running_loop().time()
+            try:
+                await realtime.subscribe(symbols, on_bar)
+                # Clean return from subscribe() -- server closed the
+                # socket. Treat as a reconnectable event; the outer
+                # task supervisor (or a session-boundary shutdown)
+                # is what stops this loop.
+                logger.warning("Polygon WS closed cleanly -- reconnecting")
+            except asyncio.CancelledError:
+                raise
+            except SourceUnauthorized:
+                # Bad API key / revoked entitlement -- reconnecting
+                # would loop forever on 401. Let the task die so the
+                # supervisor surfaces it.
+                logger.exception("Polygon WS auth failed -- not reconnecting")
+                raise
+            except Exception as e:
+                logger.warning(
+                    "Polygon WS dropped (%s: %s) -- reconnecting in %.1fs",
+                    type(e).__name__, e, backoff,
+                )
+
+            connected_for = asyncio.get_running_loop().time() - t0
+            if connected_for >= _WS_HEALTHY_S:
+                # Long-lived connection just ended -- treat the next
+                # attempt as a fresh reconnect, not part of an outage.
+                backoff = _WS_BACKOFF_START_S
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, _WS_BACKOFF_MAX_S)
 
     except asyncio.CancelledError:
         logger.info("Task cancelled -- exiting")

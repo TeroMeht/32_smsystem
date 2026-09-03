@@ -294,15 +294,17 @@ async def bulk_insert_daily_bars(
 
 async def bulk_insert_daily_indicators(
     pool: asyncpg.Pool,
-    rows: Sequence[tuple[int, date, float]],
+    rows: Sequence[tuple[int, date, Optional[float], Optional[float]]],
 ) -> None:
     """
-    Upsert calculated per-day indicators (currently just ATR14).
+    Upsert calculated per-day indicators (ATR14 and SMA200).
 
-    ``rows`` is a sequence of ``(symbolid, date, atr)`` tuples. A fresh
-    ATR14 computation from a wider window can legitimately produce a
-    different value for the same date, so the DO UPDATE branch overwrites
-    the previous value.
+    ``rows`` is a sequence of ``(symbolid, date, atr, sma200)`` tuples.
+    Either indicator may be ``None`` when its warm-up window (14 or 200
+    sessions respectively) hasn't been reached yet on disk. A fresh
+    compute from a wider window can legitimately produce a different
+    value for the same date, so the DO UPDATE branch overwrites the
+    previous value for both indicators.
     """
     if not rows:
         return
@@ -313,21 +315,23 @@ async def bulk_insert_daily_indicators(
                 CREATE TEMP TABLE _stage_daily_ind (
                     symbolid  integer,
                     date      date,
-                    atr       numeric(12,4)
+                    atr       numeric(12,4),
+                    sma200    numeric(12,4)
                 ) ON COMMIT DROP;
                 """
             )
             await conn.copy_records_to_table(
                 "_stage_daily_ind",
                 records=rows,
-                columns=["symbolid", "date", "atr"],
+                columns=["symbolid", "date", "atr", "sma200"],
             )
             await conn.execute(
                 """
-                INSERT INTO daily_indicators (symbolid, date, atr, updated)
-                SELECT symbolid, date, atr, now() FROM _stage_daily_ind
+                INSERT INTO daily_indicators (symbolid, date, atr, sma200, updated)
+                SELECT symbolid, date, atr, sma200, now() FROM _stage_daily_ind
                 ON CONFLICT (symbolid, date) DO UPDATE SET
                     atr     = EXCLUDED.atr,
+                    sma200  = EXCLUDED.sma200,
                     updated = EXCLUDED.updated;
                 """
             )

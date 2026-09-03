@@ -56,9 +56,9 @@
   .chart-header .close-btn:hover { color: #e6e8ec; border-color: #3a4150; }
   #chart { width: 100%; height: 360px; }
 
-  /* Two streams side by side. On narrow viewports they stack. */
-  .streams { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 1100px) { .streams { grid-template-columns: 1fr; } }
+  /* Single stream, centered and width-capped so it lines up with the
+     chart panel above it on ultrawide monitors. */
+  .streams { max-width: 1200px; margin: 0 auto; }
 
   .stream { min-width: 0; }  /* let grid children shrink below their content width */
   .stream-header { display: flex; align-items: baseline; gap: 10px;
@@ -127,9 +127,8 @@
   </div>
 
   <div class="streams">
-    <!-- Stream sections are filled by JS from STREAM_CONFIGS below. -->
+    <!-- Stream section is filled by JS from STREAM_CONFIGS below. -->
     <section class="stream" id="stream-relatr"></section>
-    <section class="stream" id="stream-rvol"></section>
   </div>
 </div>
 
@@ -180,12 +179,53 @@
   //   step:    number-input step
   //   default: fallback if no persisted value
   //   short:   short name used in the meta line
+  //   type:    'number' (default -- numeric threshold, row >= value) or
+  //            'boolAbove' (toggle -- row.close must exceed row[refField])
+  //   refField: for 'boolAbove' filters, the row field to compare `close` against
   const FILTER_SPECS = {
-    minRelatr:    { field: 'relatr',     label: 'Min RelATR',  step: 0.01, default: 0.45,    short: 'relatr' },
-    minRvol:      { field: 'rvol_cum',   label: 'Min RVOL',    step: 0.1,  default: 2.0,     short: 'rvol'   },
-    minVolume:    { field: 'volume',     label: 'Min Volume',  step: 1,    default: 100,     short: 'vol'    },
-    minCumVolume: { field: 'cum_volume', label: 'Min CumVol',  step: 1000, default: 100000,  short: 'cumvol' },
+    minRelatr:    { type: 'number',    field: 'relatr',     label: 'Min RelATR',  step: 0.01, default: 0.45,    short: 'relatr' },
+    minRvol:      { type: 'number',    field: 'rvol',       label: 'Min RVOL',    step: 0.1,  default: 2.0,     short: 'rvol'   },
+    minVolume:    { type: 'number',    field: 'volume',     label: 'Min Volume',  step: 1,    default: 100,     short: 'vol'    },
+    minCumVolume: { type: 'number',    field: 'cum_volume', label: 'Min CumVol',  step: 1000, default: 100000,  short: 'cumvol' },
+    aboveSma200:  { type: 'boolAbove', refField: 'sma200',  label: 'Above SMA200', default: true, short: '>SMA200' },
   };
+
+  // ---------- column catalog --------------------------------------------
+  // One entry per possible table column. Each stream picks which columns
+  // to render via cfg.columns (order = render order); streams that omit
+  // ``columns`` fall back to DEFAULT_COLUMNS below.
+  //
+  //   header:      <th> text
+  //   cellHtml(r): returns the raw <td>...</td> HTML for one row
+  //
+  // Row-level helpers (rank, tvUrl, fmt, ...) close over the outer scope
+  // when a stream calls its render(); the catalog itself is pure static
+  // config so we can build the <thead> from it up front.
+  const COLUMN_SPECS = {
+    rank:   { header: '#',       cellHtml: (r, rank) => `<td>${rank}</td>` },
+    symbol: { header: 'Symbol',  cellHtml: (r) => `<td>${r.symbol}</td>` },
+    time:   { header: 'Time',    cellHtml: (r) => `<td>${fmtTime(r.ts)}</td>` },
+    close:  { header: 'Close',   cellHtml: (r) => `<td>${fmt(r.close, 2)}</td>` },
+    chg:    { header: 'Chg%',    cellHtml: (r) => {
+      const chg = r.chg_pct;
+      const cls = chg == null ? '' : (chg > 0 ? 'pos' : (chg < 0 ? 'neg' : ''));
+      return `<td class="${cls}">${chg == null ? '-' : chg.toFixed(2) + '%'}</td>`;
+    }},
+    vwap:   { header: 'VWAP',    cellHtml: (r) => `<td>${fmt(r.vwap, 2)}</td>` },
+    ema9:   { header: 'EMA9',    cellHtml: (r) => `<td>${fmt(r.ema9, 2)}</td>` },
+    rvol:   { header: 'RVOL',    cellHtml: (r) => `<td>${fmt(r.rvol, 2)}</td>` },
+    relatr: { header: 'RelATR',  cellHtml: (r) => {
+      const rel = r.relatr;
+      const cls = rel > 0 ? 'neg' : (rel < 0 ? 'pos' : '');
+      return `<td class="${cls}">${fmt(rel, 2)}</td>`;
+    }},
+    sma200: { header: 'SMA200',  cellHtml: (r) => `<td>${fmt(r.sma200, 2)}</td>` },
+    volume: { header: 'Volume',  cellHtml: (r) => `<td>${fmtInt(r.volume)}</td>` },
+    cumvol: { header: 'CumVol',  cellHtml: (r) => `<td>${fmtInt(r.cum_volume)}</td>` },
+    tv:     { header: 'TV',      cellHtml: (r) => `<td><a class="tv-btn" href="${tvUrl(r)}" target="tradingview" onclick="event.stopPropagation()" title="Open in TradingView (reuses same tab)">↗</a></td>` },
+  };
+  const DEFAULT_COLUMNS = ['rank', 'symbol', 'time', 'close', 'chg', 'vwap', 'ema9',
+                           'rvol', 'relatr', 'volume', 'cumvol', 'tv'];
 
   // ---------- stream configs ---------------------------------------------
   // Two independent streams. They share the filter-input schema and the
@@ -194,31 +234,20 @@
   // and apply -- order in this array is the render order in the UI.
   const STREAM_CONFIGS = [
     {
-      id:             'relatr',
-      title:          'Top RelATR',
+      id:             'uptrend',
+      title:          'Uptrend Reversals',
       mountId:        'stream-relatr',
-      storageKey:     'relatr.filters',
-      sortStorageKey: 'relatr.sort',
+      storageKey:     'uptrend.filters',
+      sortStorageKey: 'uptrend.sort',
       defaultSort:    'relatr_desc',
-      filterKeys:     ['minRelatr', 'minRvol', 'minVolume', 'minCumVolume'],
+      // RVOL threshold intentionally omitted from this stream; the
+      // uptrend gate uses SMA200 instead of relative volume.
+      filterKeys:     ['minRelatr', 'aboveSma200', 'minVolume', 'minCumVolume'],
+      // Custom column list for this stream: drop RVOL, add SMA200.
+      // Omit ``columns`` on a stream to fall back to the default set.
+      columns:        ['rank', 'symbol', 'time', 'close', 'chg', 'vwap', 'ema9',
+                       'relatr', 'sma200', 'volume', 'cumvol', 'tv'],
       sortOptions: [
-        { value: 'relatr_desc', label: 'RelATR desc (below VWAP)' },
-        { value: 'relatr_abs',  label: '|RelATR| magnitude' },
-        { value: 'rvol_desc',   label: 'RVOL desc' },
-      ],
-    },
-    {
-      id:             'rvol',
-      title:          'Top RVOL',
-      mountId:        'stream-rvol',
-      storageKey:     'rvol.filters',
-      sortStorageKey: 'rvol.sort',
-      defaultSort:    'rvol_desc',
-      // RelATR threshold intentionally omitted -- this stream is a pure
-      // "biggest RVOL right now" scanner, RelATR direction doesn't gate it.
-      filterKeys:     ['minRvol', 'minVolume', 'minCumVolume'],
-      sortOptions: [
-        { value: 'rvol_desc',   label: 'RVOL desc' },
         { value: 'relatr_desc', label: 'RelATR desc (below VWAP)' },
         { value: 'relatr_abs',  label: '|RelATR| magnitude' },
       ],
@@ -285,6 +314,10 @@
       cfg.filterKeys.map(k => [k, FILTER_SPECS[k].default])
     );
 
+    // Columns this stream renders (order preserved). ``cfg.columns`` opt
+    // out of the default set (e.g. Uptrend Reversals swaps RVOL for SMA200).
+    const activeColumns = cfg.columns || DEFAULT_COLUMNS;
+
     // ----- load persisted filters + sort -----
     function loadFilters() {
       let saved = {};
@@ -321,6 +354,10 @@
     // literally does not carry a Min RelATR input.
     const filterInputsHtml = cfg.filterKeys.map(k => {
       const spec = FILTER_SPECS[k];
+      if (spec.type === 'boolAbove') {
+        // Checkbox for boolean gates like "Above SMA200 only".
+        return `<label><input data-f="${k}" type="checkbox">${spec.label}</label>`;
+      }
       return `<label>${spec.label}    <input data-f="${k}" type="number" step="${spec.step}"></label>`;
     }).join('\n        ');
     mount.innerHTML = `
@@ -338,18 +375,7 @@
       <table>
         <thead>
           <tr>
-            <th>#</th>
-            <th>Symbol</th>
-            <th>Time</th>
-            <th>Close</th>
-            <th>Chg%</th>
-            <th>VWAP</th>
-            <th>EMA9</th>
-            <th>RVOL</th>
-            <th>RelATR</th>
-            <th>Volume</th>
-            <th>CumVol</th>
-            <th>TV</th>
+            ${activeColumns.map(k => `<th>${COLUMN_SPECS[k].header}</th>`).join('')}
           </tr>
         </thead>
         <tbody data-body></tbody>
@@ -365,8 +391,12 @@
       fEls[key] = mount.querySelector(`[data-f="${key}"]`);
     }
 
-    // paint saved values into inputs
-    for (const [k, v] of Object.entries(FILTERS)) fEls[k].value = v;
+    // paint saved values into inputs (numeric -> .value, boolean -> .checked)
+    for (const [k, v] of Object.entries(FILTERS)) {
+      const spec = FILTER_SPECS[k];
+      if (spec && spec.type === 'boolAbove') fEls[k].checked = Boolean(v);
+      else                                   fEls[k].value   = v;
+    }
     sortEl.value = SORT;
 
     // ----- render one snapshot of data -----
@@ -378,7 +408,7 @@
           return rows.sort((a, b) => Math.abs(b.relatr) - Math.abs(a.relatr));
         case 'rvol_desc':
           return rows.sort((a, b) =>
-            (b.rvol_cum ?? -Infinity) - (a.rvol_cum ?? -Infinity));
+            (b.rvol ?? -Infinity) - (a.rvol ?? -Infinity));
         case 'relatr_desc':
         default:
           return rows.sort((a, b) => b.relatr - a.relatr);
@@ -393,6 +423,16 @@
       let rows = dataRows.filter(r => {
         for (const k of cfg.filterKeys) {
           const spec = FILTER_SPECS[k];
+          if (spec.type === 'boolAbove') {
+            // Only enforce the gate when the user has enabled it.
+            if (!f[k]) continue;
+            const ref = r[spec.refField];
+            // Missing reference (e.g. SMA200 not yet warmed up) -> drop.
+            if (ref === null || ref === undefined) return false;
+            if (r.close === null || r.close === undefined) return false;
+            if (r.close <= ref) return false;
+            continue;
+          }
           const v = r[spec.field];
           if (v === null || v === undefined || v < f[k]) return false;
         }
@@ -402,7 +442,11 @@
       rows = rows.slice(0, n);
 
       const filterSummary = cfg.filterKeys
-        .map(k => `${FILTER_SPECS[k].short}>=${f[k]}`)
+        .map(k => {
+          const spec = FILTER_SPECS[k];
+          if (spec.type === 'boolAbove') return `${spec.short}:${f[k] ? 'on' : 'off'}`;
+          return `${spec.short}>=${f[k]}`;
+        })
         .join(', ');
       metaEl.textContent =
         `${rows.length}/${dataRows.length}  ` +
@@ -422,31 +466,15 @@
         lastTsBySymbol.set(row.symbol, row.ts);
 
         // Color convention: RED for positive RelATR (price extended below
-        // VWAP), GREEN for negative (price above VWAP).
-        const rel = row.relatr;
-        const relClass = rel > 0 ? 'neg' : (rel < 0 ? 'pos' : '');
-        // Selection is page-level; both streams highlight the same symbol
-        // if it appears in both of them.
+        // VWAP), GREEN for negative (price above VWAP) -- see the relatr
+        // entry in COLUMN_SPECS. Selection is page-level; both streams
+        // highlight the same symbol if it appears in both of them.
         if (row.symbol === selectedSymbol) tr.classList.add('selected');
 
-        const chg = row.chg_pct;
-        const chgClass = chg == null ? '' : (chg > 0 ? 'pos' : (chg < 0 ? 'neg' : ''));
-
-        tr.innerHTML = `
-          <td>${rank}</td>
-          <td>${row.symbol}</td>
-          <td>${fmtTime(row.ts)}</td>
-          <td>${fmt(row.close, 2)}</td>
-          <td class="${chgClass}">${chg == null ? '-' : chg.toFixed(2) + '%'}</td>
-          <td>${fmt(row.vwap, 2)}</td>
-          <td>${fmt(row.ema9, 2)}</td>
-          <td>${fmt(row.rvol_cum, 2)}</td>
-          <td class="${relClass}">${fmt(row.relatr, 2)}</td>
-          <td>${fmtInt(row.volume)}</td>
-          <td>${fmtInt(row.cum_volume)}</td>
-          <td><a class="tv-btn" href="${tvUrl(row)}" target="tradingview"
-                 onclick="event.stopPropagation()" title="Open in TradingView (reuses same tab)">↗</a></td>
-        `;
+        // Row body assembled from this stream's activeColumns list.
+        // Legacy ``relClass`` / ``chgClass`` locals no longer needed --
+        // the coloring lives inside each column spec's cellHtml.
+        tr.innerHTML = activeColumns.map(k => COLUMN_SPECS[k].cellHtml(row, rank)).join('');
         frag.appendChild(tr);
       }
       bodyEl.replaceChildren(frag);
@@ -471,7 +499,12 @@
     function readFiltersFromInputs() {
       const out = {};
       for (const k of cfg.filterKeys) {
+        const spec = FILTER_SPECS[k];
         const defVal = streamDefaults[k];
+        if (spec.type === 'boolAbove') {
+          out[k] = fEls[k].checked;
+          continue;
+        }
         const raw = fEls[k].value;
         const n = raw === '' ? defVal : Number(raw);
         out[k] = Number.isFinite(n) ? n : defVal;
@@ -493,7 +526,11 @@
       tickAll();
     });
     resetBtn.addEventListener('click', () => {
-      for (const [k, v] of Object.entries(streamDefaults)) fEls[k].value = v;
+      for (const [k, v] of Object.entries(streamDefaults)) {
+        const spec = FILTER_SPECS[k];
+        if (spec.type === 'boolAbove') fEls[k].checked = Boolean(v);
+        else                            fEls[k].value   = v;
+      }
       onFilterChange();
     });
 

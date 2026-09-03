@@ -60,6 +60,29 @@ async def load_latest_atr_map(pool: asyncpg.Pool) -> dict[int, float]:
     return {r["symbolid"]: float(r["atr"]) for r in rows}
 
 
+async def load_latest_sma200_map(pool: asyncpg.Pool) -> dict[int, float]:
+    """
+    symbolid -> latest SMA200 from ``daily_indicators`` (DISTINCT ON per symbol).
+
+    Uses idx_daily_indicators_symbolid_date_desc for the ORDER BY. If a
+    symbol has fewer than 200 daily sessions on disk (freshly added, or
+    IPO younger than SMA200_SAMPLE_SESSIONS), ``sma200`` is NULL for
+    every row and the symbol simply won't appear in the returned dict.
+    Consumers gating on "above SMA200" should treat a missing entry as
+    "trend unknown -- skip", not as "in an uptrend".
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (symbolid) symbolid, sma200
+              FROM daily_indicators
+             WHERE sma200 IS NOT NULL
+             ORDER BY symbolid, date DESC;
+            """
+        )
+    return {r["symbolid"]: float(r["sma200"]) for r in rows}
+
+
 async def load_latest_prev_close_map(pool: asyncpg.Pool) -> dict[int, float]:
     """
     symbolid -> latest daily close from ``daily`` (DISTINCT ON per symbol).
@@ -111,8 +134,17 @@ async def load_intraday_bars_for_rvol(
     ]
 
 
-async def load_daily_for_atr_compute(pool: asyncpg.Pool,since: date) -> pd.DataFrame:
-    
+async def load_daily_for_indicators_compute(
+    pool: asyncpg.Pool,
+    since: date,
+) -> pd.DataFrame:
+    """
+    Load raw daily rows the historian needs to (re)compute
+    ``daily_indicators`` -- currently ATR14 (needs high/low/close) and
+    SMA200 (needs close only). Sorted by ``(symbolid, date)`` so the
+    caller can groupby-symbol and run trailing-window math without
+    another sort.
+    """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -288,15 +320,29 @@ async def load_latest_livestream_per_symbol(
                 SELECT DISTINCT ON (symbolid) symbolid, close AS prev_close
                   FROM daily
                  ORDER BY symbolid, date DESC
+            ),
+            -- latest_sma200 = most recent SMA200 per symbol from
+            -- daily_indicators. NULL for symbols that don't yet have 200
+            -- sessions on disk (freshly added, or IPO younger than
+            -- SMA200_SAMPLE_SESSIONS); the frontend treats a NULL sma200
+            -- as "trend unknown" and drops such rows when the "Above
+            -- SMA200" gate is enabled.
+            latest_sma200 AS (
+                SELECT DISTINCT ON (symbolid) symbolid, sma200
+                  FROM daily_indicators
+                 WHERE sma200 IS NOT NULL
+                 ORDER BY symbolid, date DESC
             )
             SELECT latest.*,
                    cum_vol.cum_volume,
                    pm_open.pm_open,
-                   prev_close.prev_close
+                   prev_close.prev_close,
+                   latest_sma200.sma200
               FROM latest
-              LEFT JOIN cum_vol    USING (symbolid)
-              LEFT JOIN pm_open    USING (symbolid)
-              LEFT JOIN prev_close USING (symbolid);
+              LEFT JOIN cum_vol       USING (symbolid)
+              LEFT JOIN pm_open       USING (symbolid)
+              LEFT JOIN prev_close    USING (symbolid)
+              LEFT JOIN latest_sma200 USING (symbolid);
             """
         )
     # Reference for the "Chg%" column switches with Helsinki wall-clock:
@@ -341,6 +387,10 @@ async def load_latest_livestream_per_symbol(
             "volume": int(r["volume"]) if r["volume"] is not None else None,
             "cum_volume": int(r["cum_volume"]) if r["cum_volume"] is not None else None,
             "chg_pct": _chg_pct(close, ref),
+            # sma200 from daily_indicators. NULL when the symbol has fewer
+            # than 200 daily sessions on disk -- the Uptrend Reversals
+            # stream drops those rows when its "Above SMA200" filter is on.
+            "sma200": float(r["sma200"]) if r["sma200"] is not None else None,
         })
     return out
 
