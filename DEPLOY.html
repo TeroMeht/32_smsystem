@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>32_smsystem — Deployment Guide</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1a1a1a;
+    --muted: #666;
+    --accent: #0b5cad;
+    --border: #e2e2e2;
+    --code-bg: #f5f5f7;
+    --code-fg: #1a1a1a;
+    --pre-bg: #0f1420;
+    --pre-fg: #e6e6e6;
+    --pre-comment: #7a8aa0;
+    --table-alt: #fafafa;
+    --tip-bg: #fff8dc;
+    --tip-border: #e6c34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --fg: #e6e6e6;
+      --muted: #999;
+      --accent: #6fb3ff;
+      --border: #2a2e35;
+      --code-bg: #1e2129;
+      --code-fg: #e6e6e6;
+      --pre-bg: #0b0e14;
+      --pre-fg: #e6e6e6;
+      --pre-comment: #7a8aa0;
+      --table-alt: #1a1d23;
+      --tip-bg: #2a2410;
+      --tip-border: #a68427;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--fg); }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+  .wrap {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+    margin-bottom: 32px;
+  }
+  header h1 {
+    margin: 0 0 6px;
+    font-size: 28px;
+    letter-spacing: -0.01em;
+  }
+  header p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 14px;
+  }
+  h2 {
+    margin-top: 40px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 20px;
+    letter-spacing: -0.01em;
+  }
+  h3 {
+    margin-top: 24px;
+    font-size: 15px;
+    color: var(--fg);
+  }
+  h4 { font-size: 14px; margin: 20px 0 6px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    background: var(--code-bg);
+    color: var(--code-fg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  pre {
+    background: var(--pre-bg);
+    color: var(--pre-fg);
+    padding: 14px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    margin: 12px 0;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; font-size: inherit; }
+  pre .c { color: var(--pre-comment); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    font-size: 14px;
+    display: block;
+    overflow-x: auto;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    white-space: nowrap;
+  }
+  td:last-child, th:last-child { white-space: normal; }
+  tr:nth-child(even) td { background: var(--table-alt); }
+  th { font-weight: 600; background: var(--code-bg); }
+  ul, ol { padding-left: 24px; }
+  li { margin: 4px 0; }
+  .toc {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 20px;
+    margin: 24px 0 32px;
+    font-size: 14px;
+  }
+  .toc ol { margin: 4px 0; padding-left: 22px; }
+  .toc li { margin: 3px 0; }
+  .tip {
+    background: var(--tip-bg);
+    border-left: 3px solid var(--tip-border);
+    padding: 10px 14px;
+    margin: 14px 0;
+    border-radius: 3px;
+    font-size: 14px;
+  }
+  .step {
+    background: var(--code-bg);
+    border-left: 3px solid var(--accent);
+    padding: 4px 14px;
+    margin: 20px 0 8px;
+    border-radius: 3px;
+    font-weight: 600;
+  }
+  .muted { color: var(--muted); font-size: 13px; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+  @media print {
+    body { font-size: 11pt; }
+    .wrap { max-width: none; padding: 20px; }
+    pre { break-inside: avoid; }
+    h2, h3 { break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>32_smsystem — Deployment Guide</h1>
+  <p>Repeatable steps to bring the app up on a fresh Windows machine and keep an existing installation up to date. End state: a desktop shortcut to <code>start.bat</code> launches the app on <code>http://127.0.0.1:8001</code>.</p>
+</header>
+
+<nav class="toc">
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#layout">What lives where</a></li>
+    <li><a href="#prereqs">Prereqs (install once per machine)</a></li>
+    <li><a href="#first">First-time deploy</a></li>
+    <li><a href="#shortcut">Desktop shortcut</a></li>
+    <li><a href="#redeploy">Redeploy (updating)</a></li>
+    <li><a href="#rollback">Rollback</a></li>
+    <li><a href="#troubleshoot">Troubleshooting</a></li>
+    <li><a href="#deps">Changing dependencies on the source PC</a></li>
+    <li><a href="#tvbridge">Install the Chrome TradingView bridge</a></li>
+  </ol>
+</nav>
+
+<h2 id="layout">What lives where</h2>
+<table>
+  <thead>
+    <tr><th>Piece</th><th>Source</th><th>Location on target</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>App (<code>32_smsystem</code>)</td><td>GitHub: <code>TeroMeht/32_smsystem</code></td><td><code>C:\codebase\prod\32_smsystem</code></td></tr>
+    <tr><td>Lib <code>data_sources</code></td><td>GitHub, pinned in <code>requirements.txt</code></td><td><code>.venv\Lib\site-packages\data_sources</code></td></tr>
+    <tr><td>Lib <code>indicators</code></td><td>GitHub, pinned in <code>requirements.txt</code></td><td><code>.venv\Lib\site-packages\indicators</code></td></tr>
+    <tr><td>Env file (secrets)</td><td>Private env-repo (git)</td><td><code>C:\codebase\env-repo\32_smsystem.env</code></td></tr>
+    <tr><td>Python + venv</td><td>Created by <code>uv</code> on the target</td><td><code>C:\codebase\prod\32_smsystem\.venv</code></td></tr>
+    <tr><td>PostgreSQL schema/data</td><td><code>pg_dump</code> from source PC</td><td>Local Postgres on the target</td></tr>
+  </tbody>
+</table>
+
+<h2 id="prereqs">Prereqs — install once per machine</h2>
+<ol>
+  <li><strong>Git for Windows</strong> — <a href="https://git-scm.com/download/win">git-scm.com/download/win</a>. During install, tick "Git from the command line and also from 3rd-party software" so PowerShell finds it.</li>
+  <li><strong>uv</strong> — in PowerShell:
+    <pre><code>powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"</code></pre>
+    Fallback if the installer can't reach <code>astral.sh</code>: <code>pip install uv</code>. Close and reopen PowerShell after.
+  </li>
+  <li><strong>PostgreSQL</strong> — same major version as source. <a href="https://www.postgresql.org/download/windows/">postgresql.org</a>. Note the <code>postgres</code> superuser password during install.</li>
+  <li><strong>GitHub auth</strong> — the env-repo is private, so this is required. Easiest: install <a href="https://cli.github.com">GitHub CLI</a> and run <code>gh auth login</code>. Or set up an SSH key on this machine and add it to your GitHub account.</li>
+  <li><strong>Chrome + <code>tv_bridge</code></strong> — only if the TradingView bridge is used. Load unpacked from <code>tv_bridge/</code> in this repo via <code>chrome://extensions</code> (Developer mode on).</li>
+</ol>
+
+<h2 id="first">First-time deploy</h2>
+<p>Run from PowerShell. Each block is one logical step.</p>
+
+<div class="step">Step 1 — Folder layout</div>
+<pre><code>mkdir C:\codebase\prod
+mkdir C:\codebase\env-repo</code></pre>
+
+<div class="step">Step 2 — Clone the app</div>
+<p>Replace <code>v0.1.0</code> with the tag you want to deploy (see <code>git tag --list</code> on the source, or the GitHub Releases page).</p>
+<pre><code>cd C:\codebase\prod
+git clone https://github.com/TeroMeht/32_smsystem.git
+cd 32_smsystem
+git checkout v0.1.0</code></pre>
+
+<div class="step">Step 3 — Clone the env-repo</div>
+<p>Replace the URL with your actual env-repo URL.</p>
+<pre><code>cd C:\codebase\env-repo
+git clone https://github.com/TeroMeht/env-repo.git</code></pre>
+
+
+<div class="step">Step 4 — Create the venv and install dependencies</div>
+<p><code>uv</code> installs Python 3.13 if needed, creates <code>.venv\</code>, resolves every pinned package, and clones <code>data_sources</code> + <code>indicators</code> from GitHub at their pinned commits.</p>
+<pre><code>cd C:\codebase\prod\32_smsystem
+uv python install 3.13
+uv venv --python 3.13
+uv pip install -r requirements.txt</code></pre>
+
+<div class="step">Step 5 — Set up PostgreSQL</div>
+<p> 1. pgadmin create database 32_smsystem</p>
+<p> 2. run schema.sql</p>
+
+<div class="step">Step 5.5 — Run stock universe script</div>
+<pre><code>cd C:\codebase\prod\32_smsystem
+.\.venv\Scripts\python.exe -m backend.stock_universe.run</code></pre>
+
+
+<div class="step">Step 6 — Smoke test</div>
+<pre><code>uv run python -c "import data_sources, indicators, backend; print('OK')"
+uv run pytest tests\
+.\start.bat</code></pre>
+<p>Open <code>http://127.0.0.1:8001</code> in a browser. If it works, continue.</p>
+
+<h2 id="shortcut">Desktop shortcut</h2>
+<p>In Explorer: right-click desktop → <em>New</em> → <em>Shortcut</em> → target <code>C:\codebase\prod\32_smsystem\start.bat</code> → name it "Start SM System". Optionally right-click → Properties → Change Icon.</p>
+
+<h2 id="redeploy">Redeploy — pulling updates</h2>
+<p>For any subsequent update (new commit, new tag, new env value):</p>
+<pre><code>cd C:\codebase\prod\32_smsystem
+.\deploy.ps1</code></pre>
+<p>That script pulls the env-repo, pulls the app repo, and re-runs <code>uv pip install -r requirements.txt</code> so any dependency changes get picked up. Then double-click the desktop shortcut to relaunch.</p>
+<p>To move to a specific tag instead of <code>main</code>'s tip:</p>
+<pre><code>cd C:\codebase\prod\32_smsystem
+git fetch --tags
+git checkout v0.2.0
+uv pip install -r requirements.txt</code></pre>
+
+<h2 id="tvbridge">Install the Chrome TradingView bridge</h2>
+<p>Optional. Only needed if you use the <code>↗</code> TradingView buttons on the <code>/relatr</code> dashboard. The extension routes every click into a single reused TradingView tab instead of stacking new ones. Without it the buttons still work — they just don't reliably reuse the tab (COOP severs plain <code>window.open</code> named-target reuse).</p>
+
+<div class="step">Step 1 — Open Chrome extensions</div>
+<p>In Chrome, go to <code>chrome://extensions</code>. Toggle <strong>Developer mode</strong> on (top-right).</p>
+
+<div class="step">Step 2 — Load unpacked</div>
+<p>Click <strong>Load unpacked</strong> (top-left) and select the folder <code>C:\codebase\prod\32_smsystem\tv_bridge</code> (the folder that contains <code>manifest.json</code> — not the file itself, and not the repo root).</p>
+<p>A card titled <strong>"SM System — TradingView Bridge"</strong> (version <code>1.0.0</code>) should appear. Make sure its toggle is on.</p>
+
+<div class="step">Step 3 — Verify</div>
+<ol>
+  <li>Start the app via the desktop shortcut and wait for <code>http://127.0.0.1:8001</code> to come up.</li>
+  <li>Open <code>http://127.0.0.1:8001/relatr</code> in Chrome (must be Chrome — the manifest uses Chrome's extension API).</li>
+  <li>Click any <code>↗</code> button in a row. First click opens a new TradingView tab; every subsequent click should reuse that same tab and bring it to the front.</li>
+</ol>
+
+<div class="tip">After editing any file under <code>tv_bridge\</code>, hit the reload (⟳) button on the extension card at <code>chrome://extensions</code> — Chrome does not auto-reload unpacked extensions. Then refresh the <code>/relatr</code> page so the new <code>content.js</code> attaches.</div>
+
+<h3>Debugging</h3>
+<table>
+  <thead>
+    <tr><th>Symptom</th><th>Where to look</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Clicks still stack new TradingView tabs</td><td>Extension card at <code>chrome://extensions</code> → <strong>Inspect views: service worker</strong>. Any <code>[tv_bridge] failed to route …</code> errors land in that console.</td></tr>
+    <tr><td>Clicks aren't intercepted at all</td><td>Open DevTools on the <code>/relatr</code> page (F12) → Console. If <code>content.js</code> didn't load, confirm the URL is <code>http://127.0.0.1:8001/...</code> (matches the manifest) and not a different host/port.</td></tr>
+    <tr><td>Backend port changed</td><td>Update <code>host_permissions</code> and <code>content_scripts.matches</code> in <code>tv_bridge\manifest.json</code>, commit, then reload the extension on each target machine.</td></tr>
+  </tbody>
+</table>
+
+</div>
+</body>
+</html>
+
