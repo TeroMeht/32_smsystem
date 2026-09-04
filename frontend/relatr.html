@@ -358,7 +358,12 @@
         // Checkbox for boolean gates like "Above SMA200 only".
         return `<label><input data-f="${k}" type="checkbox">${spec.label}</label>`;
       }
-      return `<label>${spec.label}    <input data-f="${k}" type="number" step="${spec.step}"></label>`;
+      // Use type="text" (not "number") so the browser NEVER re-formats the
+      // value with the OS/UI locale -- a Finnish Chrome would otherwise
+      // show and read back "0,45" instead of "0.45", and Number("0,45") is
+      // NaN. inputmode="decimal" keeps the mobile keyboard numeric.
+      // Both comma and dot are accepted; readFiltersFromInputs normalizes.
+      return `<label>${spec.label}    <input data-f="${k}" type="text" inputmode="decimal" pattern="[0-9.,-]*" size="6"></label>`;
     }).join('\n        ');
     mount.innerHTML = `
       <div class="stream-header">
@@ -395,7 +400,9 @@
     for (const [k, v] of Object.entries(FILTERS)) {
       const spec = FILTER_SPECS[k];
       if (spec && spec.type === 'boolAbove') fEls[k].checked = Boolean(v);
-      else                                   fEls[k].value   = v;
+      // Force a Number round-trip so any stale "0,45" string coming out of
+      // localStorage is rewritten as "0.45" in the input.
+      else                                   fEls[k].value   = Number(String(v).replace(',', '.'));
     }
     sortEl.value = SORT;
 
@@ -505,7 +512,11 @@
           out[k] = fEls[k].checked;
           continue;
         }
-        const raw = fEls[k].value;
+        // Defensive parse: normalize a European decimal comma ("0,45") to a
+        // dot ("0.45") before Number(), so a value that survives locale
+        // handling in the input still parses. Belt-and-braces with lang="en"
+        // on the input itself.
+        const raw = String(fEls[k].value).trim().replace(',', '.');
         const n = raw === '' ? defVal : Number(raw);
         out[k] = Number.isFinite(n) ? n : defVal;
       }

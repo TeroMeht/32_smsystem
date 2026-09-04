@@ -178,6 +178,7 @@
     <li><a href="#troubleshoot">Troubleshooting</a></li>
     <li><a href="#deps">Changing dependencies on the source PC</a></li>
     <li><a href="#tvbridge">Install the Chrome TradingView bridge</a></li>
+    <li><a href="#libs">Updating <code>data_sources</code> / <code>indicators</code></a></li>
   </ol>
 </nav>
 
@@ -294,6 +295,63 @@ uv pip install -r requirements.txt</code></pre>
     <tr><td>Backend port changed</td><td>Update <code>host_permissions</code> and <code>content_scripts.matches</code> in <code>tv_bridge\manifest.json</code>, commit, then reload the extension on each target machine.</td></tr>
   </tbody>
 </table>
+
+<h2 id="libs">Updating <code>data_sources</code> / <code>indicators</code></h2>
+<p>Both libs are pinned in <code>requirements.txt</code> by full commit SHA — <strong>a new commit on GitHub does not reach prod on its own</strong>. That's deliberate: every deploy is reproducible, and rollback goes back to the exact same code. To ship a new version you bump the SHA on the source PC, commit, tag, push, then redeploy on prod.</p>
+
+<div class="tip">Never change the pin to <code>@main</code> to "auto-update". That makes deploys non-reproducible and turns "which commit is running on prod?" into an unanswerable question.</div>
+
+<h3>Option A — bump via <code>pip</code> (matches how you refresh the other deps)</h3>
+<p>On the source PC:</p>
+<pre><code>cd C:\codebase\dev\32_smsystem
+.\.venv\Scripts\Activate.ps1
+
+<span class="c"># Pull the latest tip of main for whichever lib(s) changed.</span>
+pip install --upgrade --force-reinstall "git+https://github.com/TeroMeht/data_sources.git@main"
+pip install --upgrade --force-reinstall "git+https://github.com/TeroMeht/indicators.git@main"
+
+<span class="c"># Smoke test locally before freezing.</span>
+pytest tests\
+.\start.bat
+
+<span class="c"># Freeze — pip writes the new SHA back into requirements.txt.</span>
+pip freeze | Out-File -Encoding utf8 requirements.txt
+(Get-Content requirements.txt) -replace '^-e git\+', 'git+' | Set-Content -Encoding utf8 requirements.txt
+
+git diff requirements.txt   <span class="c"># sanity check: only the SHA(s) changed</span>
+git add requirements.txt
+git commit -m "Deps: bump data_sources to &lt;shortsha&gt;"
+git tag v0.2.0              <span class="c"># tag every deploy — makes rollback trivial</span>
+git push origin main --tags</code></pre>
+
+<p>Then on the prod PC:</p>
+<pre><code>cd C:\codebase\prod\32_smsystem
+.\deploy.ps1</code></pre>
+<p><code>deploy.ps1</code> pulls the app repo (which now carries the new <code>requirements.txt</code>) and re-runs <code>uv pip install -r requirements.txt</code>. <code>uv</code> sees the changed SHA and re-clones that lib at the new commit into <code>.venv\Lib\site-packages\</code>. Restart via the desktop shortcut.</p>
+
+<h3>Option B — edit the SHA by hand</h3>
+<p>If you already know the commit you want and don't want to touch the venv on the source PC:</p>
+<ol>
+  <li>Grab the full 40-char SHA from GitHub (Commits page → click a commit → the URL ends in it).</li>
+  <li>Edit <code>requirements.txt</code>, replace the SHA after <code>@</code> on the <code>data_sources</code> or <code>indicators</code> line.</li>
+  <li><code>git add</code>, commit, tag, push.</li>
+  <li><code>.\deploy.ps1</code> on prod.</li>
+</ol>
+
+<h3>Verifying what's actually installed on prod</h3>
+<pre><code>cd C:\codebase\prod\32_smsystem
+.\.venv\Scripts\python.exe -c "import data_sources; print(data_sources.__file__)"
+uv pip show data_sources
+uv pip show indicators</code></pre>
+<p><code>uv pip show</code> prints the version + install source. Compare the SHA in its output against <code>requirements.txt</code> on disk — if they match, prod is in sync with what the repo says it should be.</p>
+
+<h3>Rollback</h3>
+<p>Because each deploy is tagged, rolling the libs back is the same as rolling the whole app back:</p>
+<pre><code>cd C:\codebase\prod\32_smsystem
+git fetch --tags
+git checkout v0.1.0
+uv pip install -r requirements.txt</code></pre>
+<p>The old <code>requirements.txt</code> carries the old SHAs, so <code>uv</code> re-clones the previous versions of <code>data_sources</code> and <code>indicators</code> back into the venv.</p>
 
 </div>
 </body>
