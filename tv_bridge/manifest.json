@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "SM System — TradingView Bridge",
-  "version": "1.0.0",
-  "description": "Route symbol clicks from the /relatr dashboard into a single reused TradingView tab. Works around cross-origin isolation (COOP) that severs plain window.open named-target reuse.",
+  "version": "1.1.0",
+  "description": "Route symbol clicks from the /relatr dashboard into a single reused TradingView tab. Works around cross-origin isolation (COOP) that severs plain window.open named-target reuse. Discards the TradingView tab before navigating so the site's 'Leave site?' prompt does not fire; falls back to script-injected beforeunload disarm when the tab is active.",
 
-  "permissions": ["tabs"],
+  "permissions": ["tabs", "scripting"],
 
   "host_permissions": [
     "https://www.tradingview.com/*",
