@@ -129,21 +129,9 @@ async def run_livestream(
     pool: asyncpg.Pool,
     polygon: PolygonSource,
     symbol_map: MonitoredSymbols,
-    sink: Optional[BarSink] = None,
+    sink: BarSink,
 ) -> None:
-    """
-    Boot the live path:
-      * seed per-symbol state (ATR + rvol baseline) + REST-prime
-        today's already-occurred bars in parallel,
-      * bulk-persist the primed bars into livestream,
-      * hand the socket to ``PolygonRealtimeSource.subscribe``.
 
-    ``on_bar`` (defined below) is the seam between the source-agnostic
-    ``IncomingBar`` the adapter emits and 32's canonical ``CandleRow`` the
-    aggregator + ``process_bar`` consume. The N-min ``BarAggregator``
-    stays on this side of the seam -- mirrors the IB pattern where the
-    adapter emits 5-sec bars and the consumer aggregates.
-    """
     store = SessionStore()
     try:
         await _initialize_livestream(pool, polygon, store, symbol_map)

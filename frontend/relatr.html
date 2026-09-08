@@ -368,12 +368,8 @@
     mount.innerHTML = `
       <div class="stream-header">
         <h2>${cfg.title}</h2>
-        <span class="meta" data-meta></span>
       </div>
       <div class="filters">
-        <label>Sort
-          <select data-sort>${sortOptionsHtml}</select>
-        </label>
         ${filterInputsHtml}
         <button data-reset title="Restore defaults">Reset</button>
       </div>
@@ -387,8 +383,6 @@
       </table>
     `;
 
-    const metaEl   = mount.querySelector('[data-meta]');
-    const sortEl   = mount.querySelector('[data-sort]');
     const bodyEl   = mount.querySelector('[data-body]');
     const resetBtn = mount.querySelector('[data-reset]');
     const fEls = {};
@@ -404,7 +398,8 @@
       // localStorage is rewritten as "0.45" in the input.
       else                                   fEls[k].value   = Number(String(v).replace(',', '.'));
     }
-    sortEl.value = SORT;
+    // Sort dropdown has been removed from the UI -- SORT still drives
+    // applySort() below, seeded from localStorage or cfg.defaultSort.
 
     // ----- render one snapshot of data -----
     const lastTsBySymbol = new Map();
@@ -448,18 +443,6 @@
       rows = applySort(rows, SORT);
       rows = rows.slice(0, n);
 
-      const filterSummary = cfg.filterKeys
-        .map(k => {
-          const spec = FILTER_SPECS[k];
-          if (spec.type === 'boolAbove') return `${spec.short}:${f[k] ? 'on' : 'off'}`;
-          return `${spec.short}>=${f[k]}`;
-        })
-        .join(', ');
-      metaEl.textContent =
-        `${rows.length}/${dataRows.length}  ` +
-        `[${filterSummary}]  ` +
-        `@ ${fmtNow(now)}`;
-
       const seen = new Set();
       const frag = document.createDocumentFragment();
       let rank = 0;
@@ -491,7 +474,8 @@
     }
 
     function renderError(msg) {
-      metaEl.innerHTML = `<span class="stale">error: ${msg}</span>`;
+      // Table-level errors now surface only via the page-level meta banner.
+      // Kept as a no-op so tickAll's fan-out contract is unchanged.
     }
 
     // Called by selectSymbol()/clearSelection() so the highlight updates
@@ -531,11 +515,6 @@
       el.addEventListener('input', onFilterChange);
       el.addEventListener('change', onFilterChange);
     }
-    sortEl.addEventListener('change', () => {
-      SORT = sortEl.value;
-      saveSort(SORT);
-      tickAll();
-    });
     resetBtn.addEventListener('click', () => {
       for (const [k, v] of Object.entries(streamDefaults)) {
         const spec = FILTER_SPECS[k];

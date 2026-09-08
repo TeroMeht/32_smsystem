@@ -34,6 +34,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
+from backend.alarms.dispatcher import build_alarm_sink
 from backend.common.logging_config import setup_app_logging
 from backend.datapipe import pipeline
 from backend.dependencies import close_polygon, create_db_pool, create_polygon
@@ -70,8 +71,18 @@ async def lifespan(app: FastAPI):
     app.state.pool = pool
     app.state.polygon = polygon
 
+    # Alarms layer plugs into the datapipe's BarSink seam -- every
+    # enriched CandleRow that process_bar persists to livestream is
+    # also fanned out to each registered alarm strategy. The state
+    # inside the sink (SMA200 + cum_volume) lazily loads on the first
+    # bar, by which time _initialize_livestream has already persisted
+    # today's REST-primed bars -- so the alarm's Uptrend Reversals
+    # filters read off the same numbers the /api/livestream/top payload
+    # feeds the frontend.
+    alarm_sink = build_alarm_sink(pool)
+
     try:
-        await pipeline.startup(app, pool, polygon)
+        await pipeline.startup(app, pool, polygon, sink=alarm_sink)
         # Print the dashboard URL once the datapipe is up. Reads HOST/PORT
         # from the environment (set by start.bat) with 127.0.0.1:8000
         # defaults, so a manual `uvicorn --port 8001` invocation should

@@ -44,7 +44,7 @@ async def startup(
     app: FastAPI,
     pool: asyncpg.Pool,
     polygon: PolygonSource,
-    sink: BarSink | None = None,
+    sink: BarSink
 ) -> None:
     """
     Run the startup sequence and spawn the background livestream task.

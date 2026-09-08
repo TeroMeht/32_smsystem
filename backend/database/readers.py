@@ -415,6 +415,25 @@ async def load_livestream_freshness(pool: asyncpg.Pool) -> dict[int, datetime]:
     return {r["symbolid"]: r["ts"] for r in rows if r["ts"] is not None}
 
 
+async def load_cum_volume_map(pool: asyncpg.Pool) -> dict[int, int]:
+    """
+    symbolid -> current session cumulative volume from ``livestream``.
+
+    Mirrors the ``cum_vol`` CTE inside ``load_latest_livestream_per_symbol``
+    -- livestream is truncated at session start, so this is "volume so
+    far today". Used by the alarms layer to seed its running cum_volume
+    counters at startup so REST-primed bars contribute to the running
+    total exactly the same way they contribute to the /api/livestream/top
+    payload the frontend reads.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT symbolid, SUM(volume)::bigint AS cum_volume "
+            "FROM livestream GROUP BY symbolid;"
+        )
+    return {r["symbolid"]: int(r["cum_volume"]) for r in rows if r["cum_volume"] is not None}
+
+
 async def load_livestream_bars_for_symbol_today(
     pool: asyncpg.Pool,
     symbolid: int,

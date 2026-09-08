@@ -33,7 +33,7 @@ async def process_bar(
     pool: asyncpg.Pool,
     store: SessionStore,
     bar: CandleRow,
-    sink: Optional[BarSink] = None,
+    sink: BarSink,
 ) -> CandleRow:
     """
     Enrich ``bar`` via session state, persist to livestream, fire sink.
@@ -46,10 +46,10 @@ async def process_bar(
 
     await insert_livestream_bar(pool, enriched)
 
-    if sink is not None:
-        try:
-            await sink(enriched)
-        except Exception:
-            logger.exception("bar sink failed for %s @ %s", enriched.symbol, enriched.ts)
+
+    try:
+        await sink(enriched)
+    except Exception:
+        logger.exception("bar sink failed for %s @ %s", enriched.symbol, enriched.ts)
 
     return enriched
