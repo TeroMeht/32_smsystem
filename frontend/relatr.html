@@ -224,7 +224,7 @@
     cumvol: { header: 'CumVol',  cellHtml: (r) => `<td>${fmtInt(r.cum_volume)}</td>` },
     tv:     { header: 'TV',      cellHtml: (r) => `<td><a class="tv-btn" href="${tvUrl(r)}" target="tradingview" onclick="event.stopPropagation()" title="Open in TradingView (reuses same tab)">↗</a></td>` },
   };
-  const DEFAULT_COLUMNS = ['rank', 'symbol', 'time', 'close', 'chg', 'vwap', 'ema9',
+  const DEFAULT_COLUMNS = ['rank', 'symbol', 'time', 'close', 'chg',
                            'rvol', 'relatr', 'volume', 'cumvol', 'tv'];
 
   // ---------- stream configs ---------------------------------------------
@@ -245,8 +245,8 @@
       filterKeys:     ['minRelatr', 'aboveSma200', 'minVolume', 'minCumVolume'],
       // Custom column list for this stream: drop RVOL, add SMA200.
       // Omit ``columns`` on a stream to fall back to the default set.
-      columns:        ['rank', 'symbol', 'time', 'close', 'chg', 'vwap', 'ema9',
-                       'relatr', 'sma200', 'volume', 'cumvol', 'tv'],
+      columns:        ['rank', 'symbol', 'time', 'close', 'chg',
+                       'relatr', 'volume', 'cumvol', 'tv'],
       sortOptions: [
         { value: 'relatr_desc', label: 'RelATR desc (below VWAP)' },
         { value: 'relatr_abs',  label: '|RelATR| magnitude' },

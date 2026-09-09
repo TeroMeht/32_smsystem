@@ -42,8 +42,11 @@ StrategyFn = Callable[[CandleRow, AlarmState], Awaitable[None]]
 
 
 # One entry per active alarm strategy. Order = evaluation order per bar.
+# ALARM GENERATION DISABLED -- too many alarms firing. Re-enable by
+# uncommenting the strategy entries below. State seeding / bar folding
+# still runs so re-enabling is a one-line change.
 _STRATEGIES: List[StrategyFn] = [
-    capitulation.run,
+    # capitulation.run,
 ]
 
 

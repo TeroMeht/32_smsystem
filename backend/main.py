@@ -61,24 +61,12 @@ async def lifespan(app: FastAPI):
     logger.info("32_smsystem starting up")
     logger.info("=" * 72)
 
-    # Infra lifecycle (pool + REST client) is owned entirely here. The
-    # factories in backend.dependencies just build the object; we own
-    # the local variable and close it in ``finally``. ``app.state`` is
-    # the sharing surface for route handlers -- the datapipe still
-    # receives explicit parameters.
     pool = await create_db_pool()
     polygon = await create_polygon()
     app.state.pool = pool
     app.state.polygon = polygon
 
-    # Alarms layer plugs into the datapipe's BarSink seam -- every
-    # enriched CandleRow that process_bar persists to livestream is
-    # also fanned out to each registered alarm strategy. The state
-    # inside the sink (SMA200 + cum_volume) lazily loads on the first
-    # bar, by which time _initialize_livestream has already persisted
-    # today's REST-primed bars -- so the alarm's Uptrend Reversals
-    # filters read off the same numbers the /api/livestream/top payload
-    # feeds the frontend.
+
     alarm_sink = build_alarm_sink(pool)
 
     try:
