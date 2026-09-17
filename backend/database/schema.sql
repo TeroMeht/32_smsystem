@@ -10,15 +10,22 @@
 -- =========================================================
 
 -- 1. monitored_symbols
+--    sic_code / sic_description come from Polygon /v3/reference/tickers
+--    (the same call that returns market_cap in the universe filter). They
+--    may be NULL -- Polygon doesn't classify every ticker (foreign issuers,
+--    some ADRs). SIC is the only universal classification Polygon exposes;
+--    there is no GICS sector/industry on the reference endpoint.
 CREATE TABLE monitored_symbols (
-    symbolid     serial      PRIMARY KEY,
-    symbol       text        NOT NULL UNIQUE,
-    exchange     text,                              -- 'NASDAQ' / 'NYSE' / ... (TradingView prefix)
-    market_cap   bigint,
-    adv_dollar   bigint,
-    last_refresh timestamptz,
-    active       boolean     NOT NULL DEFAULT true,
-    added        timestamptz NOT NULL DEFAULT now()
+    symbolid        serial      PRIMARY KEY,
+    symbol          text        NOT NULL UNIQUE,
+    exchange        text,                              -- 'NASDAQ' / 'NYSE' / ... (TradingView prefix)
+    market_cap      bigint,
+    adv_dollar      bigint,
+    sic_code        text,                              -- e.g. '7372' (kept as text to preserve leading zeros)
+    sic_description text,                              -- e.g. 'Services-Prepackaged Software'
+    last_refresh    timestamptz,
+    active          boolean     NOT NULL DEFAULT true,
+    added           timestamptz NOT NULL DEFAULT now()
 );
 
 
@@ -161,3 +168,7 @@ CREATE INDEX IF NOT EXISTS idx_daily_symbolid_date_desc
 -- daily_indicators lookups by symbol newest-first (latest ATR feeds RelATR)
 CREATE INDEX IF NOT EXISTS idx_daily_indicators_symbolid_date_desc
     ON daily_indicators (symbolid, date DESC);
+
+-- monitored_symbols lookups by SIC code (grouping / filtering active tickers by sector)
+CREATE INDEX IF NOT EXISTS idx_monitored_symbols_sic_code
+    ON monitored_symbols (sic_code) WHERE active;

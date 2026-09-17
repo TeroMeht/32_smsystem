@@ -286,6 +286,11 @@ async def load_latest_livestream_per_symbol(
                 SELECT DISTINCT ON (l.symbolid)
                        ms.symbol,
                        ms.exchange,
+                       -- SIC classification joins from monitored_symbols
+                       -- (Polygon /v3/reference/tickers). NULL for tickers
+                       -- Polygon doesn't classify -- the frontend renders
+                       -- an em-dash for those cells.
+                       ms.sic_description,
                        l.symbolid,
                        l.ts,
                        l.close,
@@ -386,6 +391,9 @@ async def load_latest_livestream_per_symbol(
         out.append({
             "symbol": r["symbol"],
             "exchange": r["exchange"],
+            # SIC industry description from monitored_symbols. NULL for
+            # tickers Polygon didn't classify -- rendered as an em-dash.
+            "sic_description": r["sic_description"],
             "ts": r["ts"].isoformat(),
             "close": close,
             "vwap": float(r["vwap"]) if r["vwap"] is not None else None,
