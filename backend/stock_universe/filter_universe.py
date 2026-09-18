@@ -4,12 +4,18 @@ Steps 2-4 — price + market cap filter using Polygon.
 Cascade:
     - Snapshot endpoint gives last close for every US ticker in ONE call
     - Filter price > UNIVERSE_MIN_PRICE
-    - Fetch ticker details (market cap) in parallel for survivors
+    - Fetch ticker details (market cap + SIC classification) in parallel
+      for survivors -- one call yields both, so classification is free
     - Filter market cap > UNIVERSE_MIN_MARKET_CAP
 
 Inputs:  DATA_DIR / universe_raw.csv
-Outputs: DATA_DIR / universe_filtered.csv    (survivors)
+Outputs: DATA_DIR / universe_filtered.csv    (survivors, with SIC classification)
          DATA_DIR / universe_dropped.csv     (with reason)
+
+Polygon does not expose GICS sector/industry on the reference endpoint --
+SIC is the only universal classification available. Coverage isn't 100%
+(some ADRs / foreign issuers come back null), so downstream code must
+tolerate missing values.
 """
 
 import time
@@ -58,19 +64,36 @@ def fetch_snapshot_prices() -> dict[str, float]:
     return prices
 
 
-def fetch_market_cap(symbol: str) -> tuple[str, float | None, str | None]:
+def fetch_ticker_details(
+    symbol: str,
+) -> tuple[str, float | None, str | None, str | None, str | None]:
+    """
+    Pull market cap + SIC classification from Polygon's reference endpoint
+    in a single call.
+
+    Returns (symbol, market_cap, sic_code, sic_description, error).
+    ``error`` is None on success. ``sic_code`` / ``sic_description`` may be
+    None even on success -- Polygon doesn't classify every ticker.
+    """
     url = f"{BASE}/v3/reference/tickers/{symbol}"
     try:
         r = SESSION.get(url, timeout=15)
         if r.status_code == 404:
-            return symbol, None, "404_not_found"
+            return symbol, None, None, None, "404_not_found"
         r.raise_for_status()
-        mc = r.json().get("results", {}).get("market_cap")
+        results = r.json().get("results") or {}
+        mc = results.get("market_cap")
+        sic_code = results.get("sic_code")
+        sic_desc = results.get("sic_description")
+        # Polygon returns sic_code as a string ("7372"); keep it that way to
+        # preserve leading zeros on lower codes and to match the DB column type.
+        sic_code_s = str(sic_code) if sic_code is not None else None
+        sic_desc_s = str(sic_desc) if sic_desc is not None else None
         if mc is None:
-            return symbol, None, "no_market_cap_field"
-        return symbol, float(mc), None
+            return symbol, None, sic_code_s, sic_desc_s, "no_market_cap_field"
+        return symbol, float(mc), sic_code_s, sic_desc_s, None
     except Exception as e:
-        return symbol, None, f"error:{type(e).__name__}"
+        return symbol, None, None, None, f"error:{type(e).__name__}"
 
 
 def main() -> pd.DataFrame:
@@ -125,23 +148,29 @@ def main() -> pd.DataFrame:
     priced = priced[priced["last_price"] > settings.UNIVERSE_MIN_PRICE].copy()
     log.info("Survivors after price filter:         %5d", len(priced))
 
-    # ---- STAGE 3: parallel market cap fetch ----
+    # ---- STAGE 3: parallel ticker-details fetch (market cap + SIC) ----
     workers = settings.HTTP_WORKERS_TICKER_DETAILS
     log.info("")
-    log.info("--- STAGE 3: fetch market caps (%d workers) ---", workers)
+    log.info("--- STAGE 3: fetch ticker details -- market cap + SIC "
+             "(%d workers) ---", workers)
     t0 = time.time()
     caps: dict[str, float | None] = {}
+    sic_codes: dict[str, str | None] = {}
+    sic_descs: dict[str, str | None] = {}
     errors: dict[str, str] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(fetch_market_cap, s): s for s in priced["symbol"]}
+        futures = {pool.submit(fetch_ticker_details, s): s for s in priced["symbol"]}
         for i, fut in enumerate(as_completed(futures), 1):
-            sym, mc, err = fut.result()
+            sym, mc, sic_code, sic_desc, err = fut.result()
             caps[sym] = mc
+            sic_codes[sym] = sic_code
+            sic_descs[sym] = sic_desc
             if err:
                 errors[sym] = err
             if i % 500 == 0:
-                log.info("  progress: %4d/%d market caps fetched", i, len(futures))
-    log.info("Market caps fetched in %.1fs", time.time() - t0)
+                log.info("  progress: %4d/%d ticker details fetched",
+                         i, len(futures))
+    log.info("Ticker details fetched in %.1fs", time.time() - t0)
     if errors:
         err_counts: dict[str, int] = {}
         for reason in errors.values():
@@ -150,7 +179,14 @@ def main() -> pd.DataFrame:
         for reason, cnt in sorted(err_counts.items(), key=lambda x: -x[1]):
             log.info("    %-25s %5d", reason, cnt)
 
-    priced["market_cap"] = priced["symbol"].map(caps)
+    priced["market_cap"]      = priced["symbol"].map(caps)
+    priced["sic_code"]        = priced["symbol"].map(sic_codes)
+    priced["sic_description"] = priced["symbol"].map(sic_descs)
+
+    sic_missing = int(priced["sic_code"].isna().sum())
+    log.info("SIC classification: %d present, %d missing  (%s missing)",
+             len(priced) - sic_missing, sic_missing,
+             _pct(sic_missing, len(priced)))
 
     no_cap = priced[priced["market_cap"].isna()]
     log.info("Dropped: market_cap unavailable       %5d  (%s of priced)",
@@ -160,7 +196,9 @@ def main() -> pd.DataFrame:
     for r in no_cap.itertuples():
         dropped_rows.append({"symbol": r.symbol, "name": r.name,
                              "exchange": r.exchange, "reason": "no_market_cap",
-                             "last_price": r.last_price})
+                             "last_price": r.last_price,
+                             "sic_code": r.sic_code,
+                             "sic_description": r.sic_description})
     with_cap = priced.dropna(subset=["market_cap"]).copy()
 
     # ---- STAGE 4: market cap filter ----
@@ -176,7 +214,9 @@ def main() -> pd.DataFrame:
         dropped_rows.append({"symbol": r.symbol, "name": r.name,
                              "exchange": r.exchange, "reason": "small_cap",
                              "last_price": r.last_price,
-                             "market_cap": r.market_cap})
+                             "market_cap": r.market_cap,
+                             "sic_code": r.sic_code,
+                             "sic_description": r.sic_description})
 
     final = with_cap[with_cap["market_cap"] > settings.UNIVERSE_MIN_MARKET_CAP].copy()
     final = final.sort_values("market_cap", ascending=False).reset_index(drop=True)
@@ -204,8 +244,22 @@ def main() -> pd.DataFrame:
     log.info("")
     log.info("Top 10 by market cap:")
     for r in final.head(10).itertuples():
-        log.info("  %-6s  %-40s  $%12.2f  cap=$%s",
-                 r.symbol, r.name[:40], r.last_price, f"{int(r.market_cap):,}")
+        sic = r.sic_description if pd.notna(r.sic_description) else "(no SIC)"
+        log.info("  %-6s  %-40s  $%12.2f  cap=$%s  [%s]",
+                 r.symbol, r.name[:40], r.last_price,
+                 f"{int(r.market_cap):,}", sic[:40])
+
+    log.info("")
+    log.info("Top 15 SIC groups (by survivor count):")
+    sic_counts = (
+        final.dropna(subset=["sic_description"])
+             .groupby("sic_description")
+             .size()
+             .sort_values(ascending=False)
+             .head(15)
+    )
+    for desc, cnt in sic_counts.items():
+        log.info("  %5d  %s", cnt, desc)
 
     return final
 

@@ -61,6 +61,10 @@
   .streams { max-width: 1200px; margin: 0 auto; }
 
   .stream { min-width: 0; }  /* let grid children shrink below their content width */
+  /* Vertical breathing room between stacked streams (Uptrend Reversals
+     above, Reversal Shorts below). Only applies between siblings, so the
+     first stream still hugs the chart panel above it. */
+  .stream + .stream { margin-top: 32px; }
   .stream-header { display: flex; align-items: baseline; gap: 10px;
                    padding: 6px 2px; margin-bottom: 6px; }
   .stream-header h2 { font-size: 14px; margin: 0; font-weight: 600;
@@ -84,6 +88,13 @@
   th { text-align: right; font-size: 10px; color: #8a92a5; font-weight: 500;
        text-transform: uppercase; letter-spacing: 0.5px; }
   th:first-child, td:first-child { text-align: left; }
+  /* Sector column carries SIC descriptions, which can be long
+     ("Services-Prepackaged Software", "Semiconductors & Related Devices").
+     Left-align, cap the width, truncate with ellipsis; the full text
+     stays available via the cell's title tooltip on hover. */
+  th.sector, td.sector { text-align: left; max-width: 180px;
+                         white-space: nowrap; overflow: hidden;
+                         text-overflow: ellipsis; color: #b6bccb; }
   tbody tr { cursor: pointer; }
   tbody tr:hover td { background: #17252b; }
   tbody tr.selected td { background: #1c2a34; }
@@ -96,6 +107,39 @@
              padding: 0 4px; }
   a.tv-btn:hover { color: #b3d0ff; }
   .stale { color: #8a92a5; font-style: italic; }
+
+  /* Per-row "block this symbol" button. Sits in its own column and
+     swallows the row click so it never navigates the chart. */
+  button.block-btn { background: transparent; border: 1px solid #2a2f3a;
+                     color: #8a92a5; border-radius: 4px;
+                     padding: 0 6px; font-size: 12px; line-height: 18px;
+                     cursor: pointer; }
+  button.block-btn:hover { color: #ff4757; border-color: #ff4757; }
+
+  /* Fixed side panel listing today's blocked symbols. Hidden while empty
+     so it doesn't leak visual noise onto a clean session. Blocks live in
+     localStorage keyed by local date and auto-clear once the date rolls
+     over (see pruneBlocked). Click a row to unblock immediately. */
+  .blocked-panel { position: fixed; top: 80px; right: 16px;
+                   width: 160px; max-height: calc(100vh - 100px);
+                   overflow-y: auto;
+                   background: #12161d; border: 1px solid #1e232d;
+                   border-radius: 6px; padding: 8px 10px;
+                   font-size: 12px; color: #e6e8ec;
+                   z-index: 10; }
+  .blocked-panel.hidden { display: none; }
+  .blocked-panel h3 { font-size: 11px; margin: 0 0 6px;
+                      color: #8a92a5; font-weight: 500;
+                      text-transform: uppercase; letter-spacing: 0.5px; }
+  .blocked-panel ul { list-style: none; margin: 0; padding: 0; }
+  .blocked-panel li { display: flex; align-items: center;
+                      justify-content: space-between; gap: 6px;
+                      padding: 4px 2px; border-bottom: 1px solid #1e232d;
+                      cursor: pointer; }
+  .blocked-panel li:last-child { border-bottom: none; }
+  .blocked-panel li:hover { color: #22e56d; }
+  .blocked-panel .unblock-hint { color: #8a92a5; font-size: 10px; }
+  .blocked-panel li:hover .unblock-hint { color: #22e56d; }
 </style>
 </head>
 <body>
@@ -127,10 +171,22 @@
   </div>
 
   <div class="streams">
-    <!-- Stream section is filled by JS from STREAM_CONFIGS below. -->
+    <!-- Stream sections are filled by JS from STREAM_CONFIGS below.
+         Uptrend Reversals stacks above Reversal Shorts; each stream has
+         its own filters, sort, and localStorage slot but shares the
+         chart panel above and the page-level blocked-symbol set. -->
     <section class="stream" id="stream-relatr"></section>
+    <section class="stream" id="stream-shorts"></section>
   </div>
 </div>
+
+<!-- Side panel of blocked symbols. Hidden while empty; entries expire
+     at the local-date rollover (see pruneBlocked). Click an entry to
+     unblock immediately. -->
+<aside id="blockedPanel" class="blocked-panel hidden">
+  <h3>Blocked (<span id="blockedCount">0</span>)</h3>
+  <ul id="blockedList"></ul>
+</aside>
 
 <script type="module">
   import { initChart } from '/ui/chart.js';
@@ -169,6 +225,114 @@
       hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
     });
   }
+  // HTML-escape a free-text field so an accidental &/< in a SIC description
+  // (e.g. "Semiconductors & Related Devices") renders as text, not markup.
+  // Also used for the ``title`` tooltip attribute, where quotes matter.
+  function esc(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // ---------- blocked-symbols store --------------------------------------
+  // Per-user, per-browser list of tickers the user has hidden from all
+  // streams. Storage shape: { "AAPL": "2026-09-16", ... } -- value is the
+  // LOCAL date the block was set. Entries older than today are pruned on
+  // load and on every tick, so a block set today auto-clears at midnight
+  // local. Click a row in the side panel to remove it immediately.
+  const BLOCKED_KEY = 'blocked.symbols';
+  const blockedEls = {
+    panel: document.getElementById('blockedPanel'),
+    list:  document.getElementById('blockedList'),
+    count: document.getElementById('blockedCount'),
+  };
+
+  function todayLocal() {
+    const d = new Date();
+    // YYYY-MM-DD in the browser's local timezone. Using ISO on a UTC
+    // Date would flip a day around midnight in most timezones, so build
+    // the string from the local getters.
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+  function loadBlocked() {
+    try { return JSON.parse(localStorage.getItem(BLOCKED_KEY)) || {}; }
+    catch { return {}; }
+  }
+  function saveBlocked(map) {
+    try { localStorage.setItem(BLOCKED_KEY, JSON.stringify(map)); } catch {}
+  }
+  function pruneBlocked() {
+    // Drop any entry whose date is strictly older than today. Ties
+    // ('YYYY-MM-DD' equality) stay -- today's blocks live until the
+    // date rolls over.
+    const today = todayLocal();
+    const map = loadBlocked();
+    let changed = false;
+    for (const [sym, day] of Object.entries(map)) {
+      if (day !== today) { delete map[sym]; changed = true; }
+    }
+    if (changed) saveBlocked(map);
+    return map;
+  }
+  let BLOCKED = pruneBlocked();
+
+  // Runs on every poll tick. Mutates BLOCKED in place so
+  // block/unblockSymbol don't have to reassign, and re-renders the side
+  // panel only when the date rollover actually removed something.
+  function pruneBlockedInPlace() {
+    const today = todayLocal();
+    let changed = false;
+    for (const sym of Object.keys(BLOCKED)) {
+      if (BLOCKED[sym] !== today) { delete BLOCKED[sym]; changed = true; }
+    }
+    if (changed) { saveBlocked(BLOCKED); renderBlockedPanel(); }
+    return changed;
+  }
+
+  function isBlocked(sym) { return sym in BLOCKED; }
+  function blockSymbol(sym) {
+    BLOCKED[sym] = todayLocal();
+    saveBlocked(BLOCKED);
+    renderBlockedPanel();
+    tickAll();  // repaint tables without the newly-blocked row
+  }
+  function unblockSymbol(sym) {
+    delete BLOCKED[sym];
+    saveBlocked(BLOCKED);
+    renderBlockedPanel();
+    tickAll();
+  }
+  function renderBlockedPanel() {
+    const syms = Object.keys(BLOCKED).sort();
+    blockedEls.count.textContent = syms.length;
+    if (syms.length === 0) {
+      blockedEls.panel.classList.add('hidden');
+      blockedEls.list.replaceChildren();
+      return;
+    }
+    blockedEls.panel.classList.remove('hidden');
+    const frag = document.createDocumentFragment();
+    for (const sym of syms) {
+      const li = document.createElement('li');
+      li.dataset.symbol = sym;
+      li.title = 'Click to unblock';
+      li.innerHTML = `<span>${sym}</span><span class="unblock-hint">unblock</span>`;
+      frag.appendChild(li);
+    }
+    blockedEls.list.replaceChildren(frag);
+  }
+  blockedEls.list.addEventListener('click', (e) => {
+    const li = e.target.closest('li');
+    if (!li || !li.dataset.symbol) return;
+    unblockSymbol(li.dataset.symbol);
+  });
 
   // ---------- filter catalog --------------------------------------------
   // Full schema of threshold filters. Each stream picks the subset it
@@ -179,15 +343,26 @@
   //   step:    number-input step
   //   default: fallback if no persisted value
   //   short:   short name used in the meta line
-  //   type:    'number' (default -- numeric threshold, row >= value) or
-  //            'boolAbove' (toggle -- row.close must exceed row[refField])
+  //   type:    'number'       -- numeric MIN threshold, row[field] >= value
+  //            'maxNumber'    -- numeric MAX threshold, row[field] <= value.
+  //                             NULL on the row PASSES (missing data
+  //                             isn't confirmed above threshold).
+  //            'maxNumberStrict' -- like 'maxNumber' (row[field] <= value)
+  //                             but NULL FAILS instead of passing --
+  //                             can't confirm the row is extended.
+  //                             User types the threshold with its sign,
+  //                             so the Reversal Shorts stream takes
+  //                             values like -0.45 directly.
+  //            'boolAbove'    -- toggle, row.close must exceed row[refField]
   //   refField: for 'boolAbove' filters, the row field to compare `close` against
   const FILTER_SPECS = {
-    minRelatr:    { type: 'number',    field: 'relatr',     label: 'Min RelATR',  step: 0.01, default: 0.45,    short: 'relatr' },
-    minRvol:      { type: 'number',    field: 'rvol',       label: 'Min RVOL',    step: 0.1,  default: 2.0,     short: 'rvol'   },
-    minVolume:    { type: 'number',    field: 'volume',     label: 'Min Volume',  step: 1,    default: 100,     short: 'vol'    },
-    minCumVolume: { type: 'number',    field: 'cum_volume', label: 'Min CumVol',  step: 1000, default: 100000,  short: 'cumvol' },
-    aboveSma200:  { type: 'boolAbove', refField: 'sma200',  label: 'Above SMA200', default: true, short: '>SMA200' },
+    minRelatr:      { type: 'number',       field: 'relatr',            label: 'Min RelATR',        step: 0.01, default: 0.40,    short: 'relatr'  },
+    shortMinRelatr: { type: 'maxNumberStrict', field: 'relatr',         label: 'Max RelATR',        step: 0.01, default: -0.40,   short: 'relatr↑' },
+    minRvol:        { type: 'number',       field: 'rvol',              label: 'Min RVOL',          step: 0.1,  default: 0.0,     short: 'rvol'    },
+    minVolume:      { type: 'number',       field: 'volume',            label: 'Min Volume',        step: 1,    default: 5000,     short: 'vol'     },
+    minCumVolume:   { type: 'number',       field: 'cum_volume',        label: 'Min CumVol',        step: 1000, default: 100000,  short: 'cumvol'  },
+    maxPmGap:       { type: 'maxNumber',    field: 'premarket_gap_pct', label: 'Max PM Gap%',       step: 0.1,  default: 2.0,     short: 'pmgap'   },
+    aboveSma200:    { type: 'boolAbove',    refField: 'sma200',         label: 'Above SMA200',                  default: true,    short: '>SMA200' },
   };
 
   // ---------- column catalog --------------------------------------------
@@ -204,6 +379,16 @@
   const COLUMN_SPECS = {
     rank:   { header: '#',       cellHtml: (r, rank) => `<td>${rank}</td>` },
     symbol: { header: 'Symbol',  cellHtml: (r) => `<td>${r.symbol}</td>` },
+    // SIC industry description from Polygon (via monitored_symbols).
+    // Long strings are truncated in CSS with ellipsis; the full text is
+    // in the title attribute so hovering the cell shows it in a tooltip.
+    // NULL renders as an em-dash to match other missing-value cells.
+    sector: { header: 'Sector',  cellHtml: (r) => {
+      const s = r.sic_description;
+      if (!s) return `<td class="sector">—</td>`;
+      const safe = esc(s);
+      return `<td class="sector" title="${safe}">${safe}</td>`;
+    }},
     time:   { header: 'Time',    cellHtml: (r) => `<td>${fmtTime(r.ts)}</td>` },
     close:  { header: 'Close',   cellHtml: (r) => `<td>${fmt(r.close, 2)}</td>` },
     chg:    { header: 'Chg%',    cellHtml: (r) => {
@@ -219,10 +404,22 @@
       const cls = rel > 0 ? 'neg' : (rel < 0 ? 'pos' : '');
       return `<td class="${cls}">${fmt(rel, 2)}</td>`;
     }},
+    pmGap:  { header: 'PM Gap%', cellHtml: (r) => {
+      // (pm_open - prev_close) / prev_close, in %. NULL when either
+      // endpoint is missing (freshly added symbol / session not started).
+      const g = r.premarket_gap_pct;
+      const cls = g == null ? '' : (g > 0 ? 'pos' : (g < 0 ? 'neg' : ''));
+      return `<td class="${cls}">${g == null ? '-' : g.toFixed(2) + '%'}</td>`;
+    }},
     sma200: { header: 'SMA200',  cellHtml: (r) => `<td>${fmt(r.sma200, 2)}</td>` },
     volume: { header: 'Volume',  cellHtml: (r) => `<td>${fmtInt(r.volume)}</td>` },
     cumvol: { header: 'CumVol',  cellHtml: (r) => `<td>${fmtInt(r.cum_volume)}</td>` },
     tv:     { header: 'TV',      cellHtml: (r) => `<td><a class="tv-btn" href="${tvUrl(r)}" target="tradingview" onclick="event.stopPropagation()" title="Open in TradingView (reuses same tab)">↗</a></td>` },
+    // Per-row block button. Uses a data attribute rather than an inline
+    // onclick so it survives frag re-render and delegates via the tbody
+    // listener. stopPropagation on the tbody handler keeps this from
+    // triggering the row-click chart load.
+    block:  { header: '',        cellHtml: (r) => `<td><button class="block-btn" data-block-sym="${r.symbol}" title="Hide ${r.symbol} until tomorrow">×</button></td>` },
   };
   const DEFAULT_COLUMNS = ['rank', 'symbol', 'time', 'close', 'chg',
                            'rvol', 'relatr', 'volume', 'cumvol', 'tv'];
@@ -241,15 +438,48 @@
       sortStorageKey: 'uptrend.sort',
       defaultSort:    'relatr_desc',
       // RVOL threshold intentionally omitted from this stream; the
-      // uptrend gate uses SMA200 instead of relative volume.
-      filterKeys:     ['minRelatr', 'aboveSma200', 'minVolume', 'minCumVolume'],
+      // uptrend gate uses SMA200 instead of relative volume. maxPmGap
+      // filters out premarket "gappers" that tend to fade during RTH.
+      filterKeys:     ['minRelatr', 'aboveSma200', 'maxPmGap', 'minVolume', 'minCumVolume'],
       // Custom column list for this stream: drop RVOL, add SMA200.
+      // ``sector`` sits right after Symbol so the SIC classification lives
+      // next to the ticker; NULL rows render as an em-dash.
       // Omit ``columns`` on a stream to fall back to the default set.
-      columns:        ['rank', 'symbol', 'time', 'close', 'chg',
-                       'rvol', 'relatr', 'volume', 'cumvol', 'tv'],
+      columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg', 'pmGap',
+                       'rvol', 'relatr', 'volume', 'cumvol', 'tv', 'block'],
       sortOptions: [
         { value: 'relatr_desc', label: 'RelATR desc (below VWAP)' },
         { value: 'relatr_abs',  label: '|RelATR| magnitude' },
+      ],
+    },
+    {
+      // Reversal Shorts: mirror of Uptrend Reversals for the upside.
+      // Negative RelATR = price extended ABOVE VWAP; "more negative =
+      // more shortable" per the user's spec. Filter and sort are both
+      // sign-aware so the user enters positive magnitudes and the code
+      // handles the sign.
+      id:             'shorts',
+      title:          'Reversal Shorts',
+      mountId:        'stream-shorts',
+      // storageKey bumped to .v2 because the meaning of the persisted
+      // shortMinRelatr value changed: v1 stored a positive magnitude
+      // (e.g. 0.45) that the code inverted; v2 stores the threshold
+      // with its sign (e.g. -0.45). Reusing the key would keep old
+      // positive values that no longer filter anything meaningful.
+      storageKey:     'shorts.filters.v2',
+      sortStorageKey: 'shorts.sort',
+      defaultSort:    'relatr_asc',
+      // shortMinRelatr uses type: 'negThreshold' -- user enters e.g. 0.45,
+      // rows keep only if relatr <= -0.45. minRvol / volume / cumvol are
+      // shared with Uptrend Reversals; PM Gap and SMA200 gates are
+      // intentionally omitted here (a spiking premarket gap is what you
+      // usually WANT to fade, not exclude).
+      filterKeys:     ['shortMinRelatr', 'minRvol', 'minVolume', 'minCumVolume'],
+      columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg', 'pmGap',
+                       'rvol', 'relatr', 'volume', 'cumvol', 'tv', 'block'],
+      sortOptions: [
+        { value: 'relatr_asc', label: 'RelATR asc (most extended above VWAP first)' },
+        { value: 'relatr_abs', label: '|RelATR| magnitude' },
       ],
     },
   ];
@@ -363,7 +593,11 @@
       // show and read back "0,45" instead of "0.45", and Number("0,45") is
       // NaN. inputmode="decimal" keeps the mobile keyboard numeric.
       // Both comma and dot are accepted; readFiltersFromInputs normalizes.
-      return `<label>${spec.label}    <input data-f="${k}" type="text" inputmode="decimal" pattern="[0-9.,-]*" size="6"></label>`;
+      // NB: dash is escaped (`\-`) so it's an unambiguous literal under
+      // Chrome's newer `v`-flag pattern parser, which treats an unescaped
+      // `-` inside a character class as a reserved punctuator unless it
+      // sits between two range endpoints.
+      return `<label>${spec.label}    <input data-f="${k}" type="text" inputmode="decimal" pattern="[0-9.,\\-]*" size="6"></label>`;
     }).join('\n        ');
     mount.innerHTML = `
       <div class="stream-header">
@@ -376,7 +610,7 @@
       <table>
         <thead>
           <tr>
-            ${activeColumns.map(k => `<th>${COLUMN_SPECS[k].header}</th>`).join('')}
+            ${activeColumns.map(k => `<th class="${k}">${COLUMN_SPECS[k].header}</th>`).join('')}
           </tr>
         </thead>
         <tbody data-body></tbody>
@@ -411,6 +645,12 @@
         case 'rvol_desc':
           return rows.sort((a, b) =>
             (b.rvol ?? -Infinity) - (a.rvol ?? -Infinity));
+        // Reversal Shorts sort: most negative RelATR first. Uptrend
+        // Reversals uses the opposite (relatr_desc). A row with a NULL
+        // relatr never reaches this point -- the filter drops it via
+        // negThreshold -- so we can assume numeric a.relatr / b.relatr.
+        case 'relatr_asc':
+          return rows.sort((a, b) => a.relatr - b.relatr);
         case 'relatr_desc':
         default:
           return rows.sort((a, b) => b.relatr - a.relatr);
@@ -420,6 +660,11 @@
     function render(dataRows, now) {
       const n = Number(nEl.value) || 20;
       const f = FILTERS;
+      // Drop blocked symbols before anything else: a blocked row is
+      // invisible everywhere on the page. Cheapest reject in the loop.
+      // The blocked set is pruned per tick (see tickAll) so a stale
+      // entry from yesterday never survives to reach this filter.
+      dataRows = dataRows.filter(r => !isBlocked(r.symbol));
       // Only apply the thresholds this stream actually configures.
       // Missing key = no gate on that field.
       let rows = dataRows.filter(r => {
@@ -433,6 +678,24 @@
             if (ref === null || ref === undefined) return false;
             if (r.close === null || r.close === undefined) return false;
             if (r.close <= ref) return false;
+            continue;
+          }
+          if (spec.type === 'maxNumber') {
+            // Upper-bound gate. Null on the row is "unknown" -- we can't
+            // confirm the row is above the max, so we pass it through.
+            const v = r[spec.field];
+            if (v === null || v === undefined) continue;
+            if (v > f[k]) return false;
+            continue;
+          }
+          if (spec.type === 'maxNumberStrict') {
+            // Upper-bound gate with NULL treated as "unknown, drop it".
+            // User types the threshold with its sign, so a Reversal
+            // Shorts value like -0.45 flows straight in and the row
+            // keeps only if row[field] <= -0.45.
+            const v = r[spec.field];
+            if (v === null || v === undefined) return false;
+            if (v > f[k]) return false;
             continue;
           }
           const v = r[spec.field];
@@ -525,8 +788,15 @@
     });
 
     // Row click -> load into the shared top chart AND update selection
-    // across both streams (page-level state).
+    // across both streams (page-level state). The Block × button
+    // intercepts first so clicking it never navigates the chart.
     bodyEl.addEventListener('click', (e) => {
+      const blockBtn = e.target.closest('[data-block-sym]');
+      if (blockBtn) {
+        e.stopPropagation();
+        blockSymbol(blockBtn.dataset.blockSym);
+        return;
+      }
       const tr = e.target.closest('tr');
       if (!tr || !tr.dataset.symbol) return;
       selectSymbol(tr.dataset.symbol);
@@ -545,6 +815,9 @@
 
   async function tickAll() {
     if (inFlight) return;   // don't stack calls if fetch is slow
+    // Cheap: check for date rollover before each tick so blocks set
+    // yesterday drop off around midnight even without a page reload.
+    pruneBlockedInPlace();
     inFlight = true;
     try {
       const r = await fetch(`/api/livestream/top`);
@@ -571,6 +844,7 @@
 
   // ---------- build streams + boot ---------------------------------------
   const streams = STREAM_CONFIGS.map(createStream);
+  renderBlockedPanel();  // seed the side panel from localStorage
   tickAll();
   reschedule();
 </script>

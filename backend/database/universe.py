@@ -51,29 +51,37 @@ def count_symbols(conn) -> tuple[int, int]:
 
 def upsert_symbols(
     conn,
-    rows: Iterable[tuple[str, str, int, int, datetime, bool]],
+    rows: Iterable[
+        tuple[str, str, int, int, str | None, str | None, datetime, bool]
+    ],
     page_size: int = 500,
 ) -> None:
     """
-    Bulk upsert (symbol, exchange, market_cap, adv_dollar, last_refresh,
-    active). ON CONFLICT updates every field except symbol -- refreshed
-    universe wins for existing rows, and active is forced true so any
-    previously-deactivated symbol comes back in when it re-enters the
-    tradable list.
+    Bulk upsert (symbol, exchange, market_cap, adv_dollar, sic_code,
+    sic_description, last_refresh, active). ON CONFLICT updates every
+    field except symbol -- refreshed universe wins for existing rows,
+    and active is forced true so any previously-deactivated symbol comes
+    back in when it re-enters the tradable list.
+
+    ``sic_code`` / ``sic_description`` may be NULL -- Polygon doesn't
+    classify every ticker (some ADRs, foreign issuers).
     """
     with conn.cursor() as cur:
         psycopg2.extras.execute_values(
             cur,
             """
             INSERT INTO monitored_symbols
-                (symbol, exchange, market_cap, adv_dollar, last_refresh, active)
+                (symbol, exchange, market_cap, adv_dollar,
+                 sic_code, sic_description, last_refresh, active)
             VALUES %s
             ON CONFLICT (symbol) DO UPDATE SET
-                exchange     = EXCLUDED.exchange,
-                market_cap   = EXCLUDED.market_cap,
-                adv_dollar   = EXCLUDED.adv_dollar,
-                last_refresh = EXCLUDED.last_refresh,
-                active       = true
+                exchange        = EXCLUDED.exchange,
+                market_cap      = EXCLUDED.market_cap,
+                adv_dollar      = EXCLUDED.adv_dollar,
+                sic_code        = EXCLUDED.sic_code,
+                sic_description = EXCLUDED.sic_description,
+                last_refresh    = EXCLUDED.last_refresh,
+                active          = true
             """,
             list(rows),
             page_size=page_size,

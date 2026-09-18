@@ -82,6 +82,31 @@ export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000, h
     lastValueVisible: false,
   });
 
+  // Volume histogram overlaid on its own price scale at the bottom of the
+  // chart. lightweight-charts' idiom for "chart within a chart" is to give
+  // a series its own priceScaleId and pin that scale to the bottom via
+  // scaleMargins. Each bar is colored per candle direction (green if
+  // close >= open, red otherwise) at reduced opacity so the histogram
+  // doesn't fight the candles for attention.
+  const VOLUME_UP   = 'rgba(34, 229, 109, 0.5)';
+  const VOLUME_DOWN = 'rgba(255, 71, 87, 0.5)';
+  const volumeSeries = chart.addHistogramSeries({
+    priceFormat:      { type: 'volume' },   // K/M/B tick labels
+    priceScaleId:     'volume',             // own scale, separate from prices
+    priceLineVisible: false,
+    lastValueVisible: false,
+  });
+  // Pin the volume scale to the bottom ~20% of the pane; leave a gap at
+  // the top so the tallest volume bars don't crash into the candles.
+  chart.priceScale('volume').applyOptions({
+    scaleMargins: { top: 0.8, bottom: 0 },
+  });
+  // Give the candles the remaining ~75%, with a hair of margin top/bottom
+  // so wicks aren't clipped against the panel edges.
+  candles.priceScale().applyOptions({
+    scaleMargins: { top: 0.05, bottom: 0.25 },
+  });
+
   // Fit to container width; keep in sync on resize.
   chart.applyOptions({ width: containerEl.clientWidth, height: height });
   const _onResize = () => {
@@ -145,12 +170,19 @@ export function initChart({ containerEl, titleEl, infoEl, cacheTtlMs = 10_000, h
       .filter(b => b.ema9 !== null && b.ema9 !== undefined)
       .map(b => ({ time: toSec(b.ts), value: b.ema9 }));
 
+    const volumeData = bars
+      .filter(b => b.volume !== null && b.volume !== undefined)
+      .map(b => ({
+        time:  toSec(b.ts),
+        value: b.volume,
+        color: b.close >= b.open ? VOLUME_UP : VOLUME_DOWN,
+      }));
+
     candles.setData(candleSeries);
     vwapLine.setData(vwapSeries);
     ema9Line.setData(ema9Series);
-    // Refit BOTH axes -- otherwise switching from a $700 stock to an $8
-    // stock leaves the price axis pinned to the old range and forces the
-    // user to zoom/pan manually.
+    volumeSeries.setData(volumeData);
+    
     chart.timeScale().fitContent();
     chart.priceScale('right').applyOptions({ autoScale: true });
   }

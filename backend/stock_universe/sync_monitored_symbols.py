@@ -4,7 +4,8 @@ Step 6 - sync universe_liquid.csv into the monitored_symbols table.
 Behaviour:
   - INSERT new tickers (auto-assigns symbolid)
   - UPDATE existing tickers' exchange / market_cap / adv_dollar /
-    last_refresh, force active=true (auto-reactivates returning ones)
+    sic_code / sic_description / last_refresh, force active=true
+    (auto-reactivates returning ones)
   - DEACTIVATE previously-active tickers no longer in the universe
     (active=false; never DELETE, so intraday_bars/daily FKs stay intact)
 
@@ -39,6 +40,20 @@ def _sample(rows: list[str], n: int = 10) -> str:
     return shown + more
 
 
+def _nullable(v) -> str | None:
+    """Turn None / pandas NA / NaN / blank strings into SQL NULL; keep the rest as str.
+
+    ``pd.isna`` covers None, pd.NA and np.nan alike -- important because a
+    CSV column read as pandas ``string`` dtype yields ``pd.NA`` (not float
+    NaN) for missing values, so a ``isinstance(v, float)`` check would miss
+    it and pass the literal string ``"<NA>"`` to Postgres.
+    """
+    if v is None or pd.isna(v):
+        return None
+    s = str(v).strip()
+    return s or None
+
+
 def main() -> None:
     in_path = DATA_DIR / "universe_liquid.csv"
 
@@ -46,10 +61,20 @@ def main() -> None:
     log.info("Step 6: sync monitored_symbols")
     log.info("=" * 60)
 
-    df = pd.read_csv(in_path)
+    # sic_code is read as string to preserve leading zeros and to match the
+    # DB column type; missing values stay as pandas NA rather than "nan".
+    df = pd.read_csv(
+        in_path,
+        dtype={"sic_code": "string", "sic_description": "string"},
+    )
     log.info("Loaded %d tickers from %s", len(df), in_path)
     df["market_cap"] = df["market_cap"].astype("int64")
     df["adv_dollar"] = df["adv_dollar"].astype("int64")
+
+    sic_present = int(df["sic_code"].notna().sum()) if "sic_code" in df.columns else 0
+    log.info("SIC classification present for %d / %d tickers",
+             sic_present, len(df))
+
     new_symbols = set(df["symbol"])
     now = datetime.now(timezone.utc)
 
@@ -78,7 +103,16 @@ def main() -> None:
         log.info("  deactivated:  %s", _sample(list(to_deactivate)))
 
         rows = [
-            (r.symbol, r.exchange, int(r.market_cap), int(r.adv_dollar), now, True)
+            (
+                r.symbol,
+                r.exchange,
+                int(r.market_cap),
+                int(r.adv_dollar),
+                _nullable(getattr(r, "sic_code", None)),
+                _nullable(getattr(r, "sic_description", None)),
+                now,
+                True,
+            )
             for r in df.itertuples()
         ]
         upsert_symbols(conn, rows)

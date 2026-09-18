@@ -286,6 +286,11 @@ async def load_latest_livestream_per_symbol(
                 SELECT DISTINCT ON (l.symbolid)
                        ms.symbol,
                        ms.exchange,
+                       -- SIC classification joins from monitored_symbols
+                       -- (Polygon /v3/reference/tickers). NULL for tickers
+                       -- Polygon doesn't classify -- the frontend renders
+                       -- an em-dash for those cells.
+                       ms.sic_description,
                        l.symbolid,
                        l.ts,
                        l.close,
@@ -364,6 +369,19 @@ async def load_latest_livestream_per_symbol(
             return None
         return round((close - ref) / ref * 100.0, 2)
 
+    def _pm_gap_pct(
+        pm_open: Optional[float], prev_close: Optional[float]
+    ) -> Optional[float]:
+        # Today's premarket gap = (pm_open - prev_close) / prev_close, in
+        # percent. Positive means the stock gapped UP into premarket --
+        # the Uptrend Reversals stream drops rows over its configured
+        # threshold to exclude fading spike-and-reverse setups. Missing
+        # either endpoint yields None; the frontend treats None as
+        # "gap unknown" and can choose to pass or drop.
+        if pm_open is None or prev_close is None or prev_close == 0:
+            return None
+        return round((pm_open - prev_close) / prev_close * 100.0, 2)
+
     out = []
     for r in rows:
         close = float(r["close"]) if r["close"] is not None else None
@@ -373,6 +391,9 @@ async def load_latest_livestream_per_symbol(
         out.append({
             "symbol": r["symbol"],
             "exchange": r["exchange"],
+            # SIC industry description from monitored_symbols. NULL for
+            # tickers Polygon didn't classify -- rendered as an em-dash.
+            "sic_description": r["sic_description"],
             "ts": r["ts"].isoformat(),
             "close": close,
             "vwap": float(r["vwap"]) if r["vwap"] is not None else None,
@@ -387,6 +408,11 @@ async def load_latest_livestream_per_symbol(
             "volume": int(r["volume"]) if r["volume"] is not None else None,
             "cum_volume": int(r["cum_volume"]) if r["cum_volume"] is not None else None,
             "chg_pct": _chg_pct(close, ref),
+            # Today's premarket gap = (pm_open - prev_close) / prev_close.
+            # NULL when either endpoint is missing (freshly added symbol,
+            # or session hasn't started). Uptrend Reversals filters on
+            # this to exclude "faders" that spiked into premarket highs.
+            "premarket_gap_pct": _pm_gap_pct(pm_open, prev_close),
             # sma200 from daily_indicators. NULL when the symbol has fewer
             # than 200 daily sessions on disk -- the Uptrend Reversals
             # stream drops those rows when its "Above SMA200" filter is on.
