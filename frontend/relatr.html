@@ -593,7 +593,11 @@
       // show and read back "0,45" instead of "0.45", and Number("0,45") is
       // NaN. inputmode="decimal" keeps the mobile keyboard numeric.
       // Both comma and dot are accepted; readFiltersFromInputs normalizes.
-      return `<label>${spec.label}    <input data-f="${k}" type="text" inputmode="decimal" pattern="[0-9.,-]*" size="6"></label>`;
+      // NB: dash is escaped (`\-`) so it's an unambiguous literal under
+      // Chrome's newer `v`-flag pattern parser, which treats an unescaped
+      // `-` inside a character class as a reserved punctuator unless it
+      // sits between two range endpoints.
+      return `<label>${spec.label}    <input data-f="${k}" type="text" inputmode="decimal" pattern="[0-9.,\\-]*" size="6"></label>`;
     }).join('\n        ');
     mount.innerHTML = `
       <div class="stream-header">
