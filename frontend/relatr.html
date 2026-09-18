@@ -356,17 +356,11 @@
   //            'boolAbove'    -- toggle, row.close must exceed row[refField]
   //   refField: for 'boolAbove' filters, the row field to compare `close` against
   const FILTER_SPECS = {
-    minRelatr:      { type: 'number',       field: 'relatr',            label: 'Min RelATR',        step: 0.01, default: 0.45,    short: 'relatr'  },
-    // Reversal Shorts version of the RelATR gate. User types a negative
-    // threshold directly (e.g. -0.45); row keeps when relatr <= that
-    // value. NULL fails -- can't confirm the row is extended.
-    shortMinRelatr: { type: 'maxNumberStrict', field: 'relatr',         label: 'Max RelATR',        step: 0.01, default: -0.45,   short: 'relatr↑' },
-    minRvol:        { type: 'number',       field: 'rvol',              label: 'Min RVOL',          step: 0.1,  default: 2.0,     short: 'rvol'    },
-    minVolume:      { type: 'number',       field: 'volume',            label: 'Min Volume',        step: 1,    default: 100,     short: 'vol'     },
+    minRelatr:      { type: 'number',       field: 'relatr',            label: 'Min RelATR',        step: 0.01, default: 0.40,    short: 'relatr'  },
+    shortMinRelatr: { type: 'maxNumberStrict', field: 'relatr',         label: 'Max RelATR',        step: 0.01, default: -0.40,   short: 'relatr↑' },
+    minRvol:        { type: 'number',       field: 'rvol',              label: 'Min RVOL',          step: 0.1,  default: 0.0,     short: 'rvol'    },
+    minVolume:      { type: 'number',       field: 'volume',            label: 'Min Volume',        step: 1,    default: 5000,     short: 'vol'     },
     minCumVolume:   { type: 'number',       field: 'cum_volume',        label: 'Min CumVol',        step: 1000, default: 100000,  short: 'cumvol'  },
-    // Excludes "fader" candidates: stocks whose premarket open was
-    // >max_pct% above yesterday's close. Payload field is computed by
-    // load_latest_livestream_per_symbol (pm_open vs prev_close).
     maxPmGap:       { type: 'maxNumber',    field: 'premarket_gap_pct', label: 'Max PM Gap%',       step: 0.1,  default: 2.0,     short: 'pmgap'   },
     aboveSma200:    { type: 'boolAbove',    refField: 'sma200',         label: 'Above SMA200',                  default: true,    short: '>SMA200' },
   };
