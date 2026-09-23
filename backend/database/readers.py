@@ -22,7 +22,6 @@ from typing import Iterable, Optional
 import asyncpg
 import pandas as pd
 from backend.datapipe.schemas import CandleRow, MonitoredSymbols
-from backend.datapipe.time_utils import HELSINKI
 
 
 async def load_active_symbol_map(pool: asyncpg.Pool) -> MonitoredSymbols:
@@ -350,19 +349,9 @@ async def load_latest_livestream_per_symbol(
               LEFT JOIN latest_sma200 USING (symbolid);
             """
         )
-    # Reference for the "Chg%" column switches with Helsinki wall-clock:
-    #   11:00 <= HKI <  16:30  -> premarket window: ref = prev_close
-    #   HKI  >= 16:30          -> regular hours   : ref = pm_open
-    #   HKI  <  11:00          -> off-session     : ref = prev_close
+    # "Chg%" follows the standard quote convention: last price vs the
+    # previous session's close, in premarket and regular hours alike.
     # Backend computes the derived value so the frontend just renders it.
-    now_hki = datetime.now(HELSINKI)
-    hki_minutes = now_hki.hour * 60 + now_hki.minute
-    in_premarket = 11 * 60 <= hki_minutes < 16 * 60 + 30
-
-    def _ref(pm_open: Optional[float], prev_close: Optional[float]) -> Optional[float]:
-        if in_premarket:
-            return prev_close
-        return pm_open if pm_open is not None else prev_close
 
     def _chg_pct(close: Optional[float], ref: Optional[float]) -> Optional[float]:
         if close is None or ref is None or ref == 0:
@@ -387,7 +376,6 @@ async def load_latest_livestream_per_symbol(
         close = float(r["close"]) if r["close"] is not None else None
         pm_open = float(r["pm_open"]) if r["pm_open"] is not None else None
         prev_close = float(r["prev_close"]) if r["prev_close"] is not None else None
-        ref = _ref(pm_open, prev_close)
         out.append({
             "symbol": r["symbol"],
             "exchange": r["exchange"],
@@ -407,7 +395,7 @@ async def load_latest_livestream_per_symbol(
             ),
             "volume": int(r["volume"]) if r["volume"] is not None else None,
             "cum_volume": int(r["cum_volume"]) if r["cum_volume"] is not None else None,
-            "chg_pct": _chg_pct(close, ref),
+            "chg_pct": _chg_pct(close, prev_close),
             # Today's premarket gap = (pm_open - prev_close) / prev_close.
             # NULL when either endpoint is missing (freshly added symbol,
             # or session hasn't started). Uptrend Reversals filters on
