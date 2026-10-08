@@ -82,18 +82,22 @@
                      cursor: pointer; }
   button.block-btn:hover { color: #ff4757; border-color: #ff4757; }
 
-  .blocked-panel { position: fixed; top: 80px; right: 16px;
-                   width: 160px; max-height: calc(100vh - 100px);
-                   overflow-y: auto;
-                   background: #12161d; border: 1px solid #1e232d;
-                   border-radius: 6px; padding: 8px 10px;
-                   font-size: 12px; color: #e6e8ec;
-                   z-index: 10; }
+  /* blocked list: a dropdown in the header controls */
+  .blocked-panel { position: relative; font-size: 12px; color: #e6e8ec; }
   .blocked-panel.hidden { display: none; }
-  .blocked-panel h3 { font-size: 11px; margin: 0 0 6px;
-                      color: #8a92a5; font-weight: 500;
-                      text-transform: uppercase; letter-spacing: 0.5px; }
-  .blocked-panel ul { list-style: none; margin: 0; padding: 0; }
+  .blocked-panel h3 { margin: 0; cursor: pointer; user-select: none;
+                      font-size: 12px; font-weight: 400; color: #8a92a5;
+                      background: #1a1e26; border: 1px solid #2a2f3a;
+                      border-radius: 4px; padding: 3px 8px; }
+  .blocked-panel h3:hover { color: #e6e8ec; background: #232833; }
+  .blocked-panel h3 .caret { display: inline-block; width: 10px; }
+  .blocked-panel ul { list-style: none; margin: 0; padding: 4px 10px;
+                      position: absolute; right: 0; top: calc(100% + 4px);
+                      width: 160px; max-height: 60vh; overflow-y: auto;
+                      background: #12161d; border: 1px solid #2a2f3a;
+                      border-radius: 6px; z-index: 20;
+                      box-shadow: 0 6px 18px rgba(0,0,0,0.4); }
+  .blocked-panel.collapsed ul { display: none; }
   .blocked-panel li { display: flex; align-items: center;
                       justify-content: space-between; gap: 6px;
                       padding: 4px 2px; border-bottom: 1px solid #1e232d;
@@ -119,6 +123,10 @@
         <option value="10000">10s</option>
         <option value="30000">30s</option>
       </select>
+      <div id="blockedPanel" class="blocked-panel hidden collapsed">
+        <h3 id="blockedToggle" title="Show / hide blocked symbols"><span class="caret" id="blockedCaret">▸</span> Blocked (<span id="blockedCount">0</span>)</h3>
+        <ul id="blockedList"></ul>
+      </div>
     </div>
   </header>
 
@@ -137,10 +145,6 @@
   </div>
 </div>
 
-<aside id="blockedPanel" class="blocked-panel hidden">
-  <h3>Blocked (<span id="blockedCount">0</span>)</h3>
-  <ul id="blockedList"></ul>
-</aside>
 
 <script type="module">
   import { initChart } from '/ui/chart.js';
@@ -262,6 +266,13 @@
     }
     blockedEls.list.replaceChildren(frag);
   }
+  // collapsed by default; click the header to expand / collapse
+  const blockedToggleEl = document.getElementById('blockedToggle');
+  const blockedCaretEl  = document.getElementById('blockedCaret');
+  blockedToggleEl.addEventListener('click', () => {
+    const collapsed = blockedEls.panel.classList.toggle('collapsed');
+    blockedCaretEl.textContent = collapsed ? '▸' : '▾';
+  });
   blockedEls.list.addEventListener('click', (e) => {
     const li = e.target.closest('li');
     if (!li || !li.dataset.symbol) return;
@@ -274,7 +285,8 @@
   const FILTER_SPECS = {
     minRelatr:      { type: 'number',       field: 'relatr',            label: 'Min RelATR',        step: 0.01, default: 0.40,    short: 'relatr'  },
     shortMinRelatr: { type: 'maxNumberStrict', field: 'relatr',         label: 'Max RelATR',        step: 0.01, default: -0.40,   short: 'relatr↑' },
-    minRvol:        { type: 'number',       field: 'rvol',              label: 'Min RVOL',          step: 0.1,  default: 1.0,     short: 'rvol'    },
+    minRvol:        { type: 'number',       field: 'rvol',              label: 'Min RVOL',          step: 0.1,  default: 0.0,     short: 'rvol'    },
+    maxChg:         { type: 'maxNumberStrict', field: 'chg_pct',        label: 'Chg% ≤',            step: 0.1,  default: -5.0,    short: 'chg'     },
     minVolume:      { type: 'number',       field: 'volume',            label: 'Min Volume',        step: 1,    default: 5000,     short: 'vol'     },
     minCumVolume:   { type: 'number',       field: 'cum_volume',        label: 'Min CumVol',        step: 1000, default: 100000,  short: 'cumvol'  },
     aboveSma200:    { type: 'boolAbove',    refField: 'sma200',         label: 'Above SMA200',                  default: true,    short: '>SMA200' },
@@ -324,7 +336,7 @@
       mountId:        'stream-relatr',
       storageKey:     'uptrend.filters',
       sortStorageKey: 'uptrend.sort.col',
-      filterKeys:     ['minRelatr', 'aboveSma200', 'minVolume', 'minCumVolume'],
+      filterKeys:     ['minRelatr', 'minRvol', 'maxChg', 'aboveSma200', 'minVolume', 'minCumVolume'],
       columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg',
                        'rvol', 'relatr', 'volume', 'cumvol', 'tv', 'block'],
     },
