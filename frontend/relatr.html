@@ -161,6 +161,7 @@
   <div class="streams">
     <section class="stream" id="stream-relatr"></section>
     <section class="stream" id="stream-shorts"></section>
+    <section class="stream" id="stream-rvol"></section>
   </div>
 </div>
 
@@ -431,6 +432,19 @@
       columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg',
                        'rvol', 'relatr', 'volume', 'cumvol', 'tv', 'block'],
     },
+    {
+      id:             'elevated_rvol',
+      title:          'Elevated RVOL',
+      mountId:        'stream-rvol',
+      // Display only -- no Telegram alarms (like Reversal Shorts).
+      apiScope:       'elevated_rvol',
+      apiFields:      { minRvol: 'min_rvol' },
+      sortStorageKey: 'elevated_rvol.sort.col',
+      defaultSort:    { key: 'rvol', dir: 'desc' },
+      filterKeys:     ['minRvol'],
+      columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg',
+                       'rvol', 'relatr', 'volume', 'cumvol', 'tv', 'block'],
+    },
   ];
 
   // ---------- page controls ----------
@@ -492,7 +506,7 @@
     const activeColumns = cfg.columns || DEFAULT_COLUMNS;
 
     // sort = { key: column, dir: 'asc' | 'desc' }; default highest Chg% first
-    const DEFAULT_SORT = { key: 'chg', dir: 'desc' };
+    const DEFAULT_SORT = cfg.defaultSort || { key: 'chg', dir: 'desc' };
     function loadSort() {
       try {
         const v = JSON.parse(localStorage.getItem(cfg.sortStorageKey));

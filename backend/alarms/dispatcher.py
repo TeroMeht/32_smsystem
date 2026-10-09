@@ -42,8 +42,9 @@ StrategyFn = Callable[[CandleRow, AlarmState], Awaitable[None]]
 
 
 # One entry per active alarm strategy. Order = evaluation order per bar.
-# Only the Uptrend Reversals setup is registered. It is a no-op until
-# Telegram alarms are switched ON from the dashboard (alarm_config).
+# Only Uptrend Reversals is alarmed. It is a no-op until Telegram alarms
+# are switched ON from the dashboard (alarm_config). Reversal Shorts and
+# Elevated RVOL are display-only tables.
 _STRATEGIES: List[StrategyFn] = [
     capitulation.run,
 ]

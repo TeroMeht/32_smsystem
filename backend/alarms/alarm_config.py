@@ -2,8 +2,8 @@
 Unified scanner + alarm configuration -- the ONE place filter values live.
 
 Holds the Telegram on/off switch, the Uptrend Reversals filter values
-(which are also the alarm thresholds) and the Reversal Shorts filter
-values. The dashboard has no defaults of its own: it loads everything
+(which are also the alarm thresholds), and the Reversal Shorts and
+Elevated RVOL filter values (display only). The dashboard has no defaults of its own: it loads everything
 from GET /api/alarms/config on page load, writes every edit back with
 POST /api/alarms/config, and "Reset" restores the defaults defined in
 the models below. Whatever the table shows is what the alarm uses.
@@ -16,8 +16,8 @@ Persisted as a small JSON file (``<repo>/data/alarm_config.json``) so
 the switch and thresholds survive a restart. A missing / corrupt file
 falls back to the defaults below (alarms OFF), never crashes startup.
 
-Only the "Uptrend Reversals" setup is alarmed. Reversal Shorts and any
-other stream are display-only by design.
+Only "Uptrend Reversals" is alarmed. Reversal Shorts and Elevated RVOL
+are display-only tables.
 """
 
 from __future__ import annotations
@@ -51,6 +51,16 @@ class ShortsFiltersUpdate(BaseModel):
     min_rvol: float | None = None
     min_volume: int | None = None
     min_cum_volume: int | None = None
+
+
+class ElevatedRvolFilters(BaseModel):
+    """Elevated RVOL table filters (display only -- never alarmed)."""
+
+    min_rvol: float = 10.0            # rvol >= (None fails, like the UI)
+
+
+class ElevatedRvolFiltersUpdate(BaseModel):
+    min_rvol: float | None = None
 
 
 # Field groups for Reset: each table's Reset only restores its own filters.
@@ -87,6 +97,9 @@ class AlarmConfig(BaseModel):
     # Reversal Shorts table filters.
     shorts: ShortsFilters = Field(default_factory=ShortsFilters)
 
+    # Elevated RVOL table filters (display only).
+    elevated_rvol: ElevatedRvolFilters = Field(default_factory=ElevatedRvolFilters)
+
     # Blocked tickers: SYMBOL -> Helsinki date (YYYY-MM-DD) it was blocked.
     # Only entries dated today count; older ones are pruned on next write.
     # Changed only via block() / unblock(), never by update() or reset().
@@ -106,7 +119,11 @@ class AlarmConfigUpdate(BaseModel):
     cooldown_minutes: int | None = Field(default=None, ge=1, le=24 * 60)
     send_chart: bool | None = None
     shorts: ShortsFiltersUpdate | None = None
+    elevated_rvol: ElevatedRvolFiltersUpdate | None = None
 
+
+# Config keys holding a nested per-table filter model.
+_NESTED_SCOPES = ("shorts", "elevated_rvol")
 
 _lock = threading.Lock()
 _current: AlarmConfig | None = None
@@ -148,17 +165,20 @@ def update(patch: AlarmConfigUpdate) -> AlarmConfig:
     global _current
     base = get()
     changes = patch.model_dump(exclude_none=True)
-    shorts_changes = changes.pop("shorts", None) or {}
+    # Nested per-table filter groups are merged field-by-field.
+    nested = {k: changes.pop(k, None) or {} for k in _NESTED_SCOPES}
     with _lock:
         new = base.model_copy(update=changes)
-        if shorts_changes:
-            new = new.model_copy(
-                update={"shorts": base.shorts.model_copy(update=shorts_changes)}
-            )
+        for key, sub in nested.items():
+            if sub:
+                new = new.model_copy(
+                    update={key: getattr(base, key).model_copy(update=sub)}
+                )
         _current = AlarmConfig.model_validate(new.model_dump())
         _save_to_disk(_current)
-    if changes or shorts_changes:
-        logger.info("Alarm config updated: %s shorts=%s", changes, shorts_changes)
+    nested_changes = {k: v for k, v in nested.items() if v}
+    if changes or nested_changes:
+        logger.info("Alarm config updated: %s %s", changes, nested_changes)
     return _current
 
 
@@ -206,7 +226,8 @@ def unblock(symbol: str) -> AlarmConfig:
 
 def reset(scope: str) -> AlarmConfig:
     """
-    Restore defaults for one table's filters: ``uptrend`` or ``shorts``.
+    Restore defaults for one table's filters:
+    ``uptrend``, ``shorts`` or ``elevated_rvol``.
     The Telegram switch and cooldown are never touched by a reset.
     """
     global _current
@@ -216,6 +237,8 @@ def reset(scope: str) -> AlarmConfig:
         upd = {k: getattr(defaults, k) for k in UPTREND_FILTER_FIELDS}
     elif scope == "shorts":
         upd = {"shorts": ShortsFilters()}
+    elif scope == "elevated_rvol":
+        upd = {"elevated_rvol": ElevatedRvolFilters()}
     else:
         raise ValueError(f"unknown reset scope: {scope!r}")
     with _lock:

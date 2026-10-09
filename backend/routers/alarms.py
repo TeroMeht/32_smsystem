@@ -4,10 +4,11 @@ Telegram alarm controls for the dashboard.
     GET  /api/alarms/config         current switch + thresholds + telegram status
     POST /api/alarms/config         partial update (switch, Uptrend Reversals
                                     filter values, cooldown, chart on/off,
-                                    Reversal Shorts filters under "shorts")
+                                    Reversal Shorts filters under "shorts",
+                                    Elevated RVOL filter under "elevated_rvol")
     POST /api/alarms/config/reset/{scope}
                                     restore default filters for one table
-                                    (scope = uptrend | shorts)
+                                    (scope = uptrend | shorts | elevated_rvol)
     POST   /api/alarms/blocked/{symbol}  block a ticker until midnight
     DELETE /api/alarms/blocked/{symbol}  unblock it
                                     (blocked = hidden in both tables AND no alarms)
