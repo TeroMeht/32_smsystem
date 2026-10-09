@@ -41,6 +41,25 @@
                       letter-spacing: 0.4px; color: #e6e8ec; }
   .stream-header .meta { font-size: 11px; color: #8a92a5; }
 
+  /* Telegram alarm controls (Uptrend Reversals header only) */
+  .alarm-ctl { margin-left: auto; display: flex; gap: 8px; align-items: center;
+               font-size: 12px; color: #8a92a5; }
+  .alarm-ctl input { width: 44px; }
+  .alarm-toggle { background: #1a1e26; color: #8a92a5; border: 1px solid #2a2f3a;
+                  border-radius: 12px; padding: 3px 12px; font-size: 12px;
+                  cursor: pointer; white-space: nowrap; }
+  .alarm-toggle:hover { color: #e6e8ec; border-color: #3a4150; }
+  .alarm-toggle.on { background: rgba(34, 229, 109, 0.12); color: #22e56d;
+                     border-color: #22e56d; }
+  .alarm-toggle:disabled { opacity: 0.5; cursor: not-allowed; }
+  .alarm-test { background: transparent; color: #8a92a5; border: 1px solid #2a2f3a;
+                border-radius: 4px; padding: 2px 8px; font-size: 12px; cursor: pointer; }
+  .alarm-test:hover:not(:disabled) { color: #e6e8ec; border-color: #3a4150; }
+  .alarm-test:disabled { opacity: 0.4; cursor: not-allowed; }
+  .alarm-msg { font-size: 11px; }
+  .alarm-msg.err { color: #ff4757; }
+  .alarm-msg.ok  { color: #22e56d; }
+
   .filters { display: flex; gap: 8px; align-items: center; font-size: 12px;
              color: #8a92a5; padding: 8px 10px; margin-bottom: 12px;
              background: #12161d; border: 1px solid #1e232d; border-radius: 6px;
@@ -189,8 +208,11 @@
       .replace(/'/g, '&#39;');
   }
 
-  // ---------- blocked symbols (cleared at local midnight) ----------
-  const BLOCKED_KEY = 'blocked.symbols';
+  // ---------- blocked symbols (server-side, cleared at local midnight) ----------
+  // Stored in the backend config so a blocked ticker is hidden in both
+  // tables AND gets no Telegram alarm. The server only returns today's
+  // entries, so the list empties itself at midnight.
+  const LEGACY_BLOCKED_KEY = 'blocked.symbols';   // old per-browser storage
   const blockedEls = {
     panel: document.getElementById('blockedPanel'),
     list:  document.getElementById('blockedList'),
@@ -205,48 +227,59 @@
     const day = String(d.getDate()).padStart(2, '0');
     return `${y}-${m}-${day}`;
   }
-  function loadBlocked() {
-    try { return JSON.parse(localStorage.getItem(BLOCKED_KEY)) || {}; }
-    catch { return {}; }
-  }
-  function saveBlocked(map) {
-    try { localStorage.setItem(BLOCKED_KEY, JSON.stringify(map)); } catch {}
-  }
-  function pruneBlocked() {
-    const today = todayLocal();
-    const map = loadBlocked();
-    let changed = false;
-    for (const [sym, day] of Object.entries(map)) {
-      if (day !== today) { delete map[sym]; changed = true; }
-    }
-    if (changed) saveBlocked(map);
-    return map;
-  }
-  let BLOCKED = pruneBlocked();
 
-  function pruneBlockedInPlace() {
-    const today = todayLocal();
-    let changed = false;
-    for (const sym of Object.keys(BLOCKED)) {
-      if (BLOCKED[sym] !== today) { delete BLOCKED[sym]; changed = true; }
+  let BLOCKED = {};   // SYMBOL -> date, mirrored from CONFIG.blocked
+
+  function syncBlockedFromConfig(conf) {
+    const next = conf.blocked || {};
+    const a = Object.keys(BLOCKED).sort().join(','), b = Object.keys(next).sort().join(',');
+    BLOCKED = { ...next };
+    if (a !== b) {
+      renderBlockedPanel();
+      for (const st of streams) st.rerender();
     }
-    if (changed) { saveBlocked(BLOCKED); renderBlockedPanel(); }
-    return changed;
   }
 
   function isBlocked(sym) { return sym in BLOCKED; }
-  function blockSymbol(sym) {
-    BLOCKED[sym] = todayLocal();
-    saveBlocked(BLOCKED);
+
+  async function blockSymbol(sym) {
+    BLOCKED[sym] = todayLocal();               // optimistic: hide right away
     renderBlockedPanel();
-    tickAll();
+    for (const st of streams) st.rerender();
+    try {
+      setConfig(await readJson(await fetch(`/api/alarms/blocked/${encodeURIComponent(sym)}`, { method: 'POST' })));
+    } catch (e) {
+      metaGlobalEl.innerHTML = `<span class="stale">block ${esc(sym)} not saved: ${esc(e.message)}</span>`;
+      await fetchConfig().catch(() => {});      // fall back to server truth
+    }
   }
-  function unblockSymbol(sym) {
+  async function unblockSymbol(sym) {
     delete BLOCKED[sym];
-    saveBlocked(BLOCKED);
     renderBlockedPanel();
-    tickAll();
+    for (const st of streams) st.rerender();
+    try {
+      setConfig(await readJson(await fetch(`/api/alarms/blocked/${encodeURIComponent(sym)}`, { method: 'DELETE' })));
+    } catch (e) {
+      metaGlobalEl.innerHTML = `<span class="stale">unblock ${esc(sym)} not saved: ${esc(e.message)}</span>`;
+      await fetchConfig().catch(() => {});
+    }
   }
+
+  // One-time move of today's browser-only blocks to the server.
+  async function migrateLegacyBlocked() {
+    let legacy = {};
+    try { legacy = JSON.parse(localStorage.getItem(LEGACY_BLOCKED_KEY)) || {}; } catch {}
+    const today = todayLocal();
+    for (const [sym, day] of Object.entries(legacy)) {
+      if (day === today && !(sym in (CONFIG.blocked || {}))) {
+        try {
+          setConfig(await readJson(await fetch(`/api/alarms/blocked/${encodeURIComponent(sym)}`, { method: 'POST' })));
+        } catch { return; }                     // keep legacy key; retry next load
+      }
+    }
+    try { localStorage.removeItem(LEGACY_BLOCKED_KEY); } catch {}
+  }
+
   function renderBlockedPanel() {
     const syms = Object.keys(BLOCKED).sort();
     blockedEls.count.textContent = syms.length;
@@ -282,15 +315,53 @@
   // ---------- filters ----------
   // type: number = min, maxNumber = max (null passes),
   //       maxNumberStrict = max (null fails), boolAbove = close > refField
+  // NO default values here: every filter value comes from the backend
+  // config (/api/alarms/config) and every edit is written back to it.
+  // int: value is sent to the backend as a whole number.
   const FILTER_SPECS = {
-    minRelatr:      { type: 'number',       field: 'relatr',            label: 'Min RelATR',        step: 0.01, default: 0.40,    short: 'relatr'  },
-    shortMinRelatr: { type: 'maxNumberStrict', field: 'relatr',         label: 'Max RelATR',        step: 0.01, default: -0.40,   short: 'relatr↑' },
-    minRvol:        { type: 'number',       field: 'rvol',              label: 'Min RVOL',          step: 0.1,  default: 0.0,     short: 'rvol'    },
-    maxChg:         { type: 'maxNumberStrict', field: 'chg_pct',        label: 'Chg% ≤',            step: 0.1,  default: -5.0,    short: 'chg'     },
-    minVolume:      { type: 'number',       field: 'volume',            label: 'Min Volume',        step: 1,    default: 5000,     short: 'vol'     },
-    minCumVolume:   { type: 'number',       field: 'cum_volume',        label: 'Min CumVol',        step: 1000, default: 100000,  short: 'cumvol'  },
-    aboveSma200:    { type: 'boolAbove',    refField: 'sma200',         label: 'Above SMA200',                  default: true,    short: '>SMA200' },
+    minRelatr:      { type: 'number',          field: 'relatr',     label: 'Min RelATR' },
+    shortMinRelatr: { type: 'maxNumberStrict', field: 'relatr',     label: 'Max RelATR' },
+    minRvol:        { type: 'number',          field: 'rvol',       label: 'Min RVOL' },
+    maxChg:         { type: 'maxNumberStrict', field: 'chg_pct',    label: 'Chg% ≤' },
+    minVolume:      { type: 'number',          field: 'volume',     label: 'Min Volume', int: true },
+    minCumVolume:   { type: 'number',          field: 'cum_volume', label: 'Min CumVol', int: true },
+    aboveSma200:    { type: 'boolAbove',       refField: 'sma200',  label: 'Above SMA200' },
   };
+
+  // ---------- server config: the single source of truth ----------
+  // Holds the Telegram switch, cooldown, and BOTH tables' filter values.
+  // Loaded before the tables are built, re-read on every poll (so a
+  // change made in another browser shows up here), written on every edit.
+  let CONFIG = null;
+  const configListeners = [];
+
+  function setConfig(data) {
+    CONFIG = data;
+    for (const fn of configListeners) fn(CONFIG);
+  }
+  async function readJson(r) {
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail ? String(data.detail) : `HTTP ${r.status}`);
+    return data;
+  }
+  async function fetchConfig() {
+    setConfig(await readJson(await fetch('/api/alarms/config')));
+  }
+  async function postConfig(body) {
+    setConfig(await readJson(await fetch('/api/alarms/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })));
+  }
+  async function resetConfig(scope) {
+    setConfig(await readJson(await fetch(`/api/alarms/config/reset/${scope}`, { method: 'POST' })));
+  }
+
+  // Filter values used to live in localStorage -- drop the stale copies.
+  for (const k of ['uptrend.filters', 'shorts.filters', 'shorts.filters.v2']) {
+    try { localStorage.removeItem(k); } catch {}
+  }
 
   // ---------- columns ----------
   // sortVal = value used for header sorting (nulls last); sortType 'str' sorts A-Z first
@@ -334,7 +405,14 @@
       id:             'uptrend',
       title:          'Uptrend Reversals',
       mountId:        'stream-relatr',
-      storageKey:     'uptrend.filters',
+      // Only this stream drives Telegram alarms: its filter values ARE
+      // the alarm thresholds, so alarm == what this table shows.
+      alarm:          true,
+      // UI filter key -> backend config field (top level of CONFIG)
+      apiScope:       null,
+      apiFields:      { minRelatr: 'min_relatr', minRvol: 'min_rvol', maxChg: 'max_chg_pct',
+                        aboveSma200: 'above_sma200', minVolume: 'min_volume',
+                        minCumVolume: 'min_cum_volume' },
       sortStorageKey: 'uptrend.sort.col',
       filterKeys:     ['minRelatr', 'minRvol', 'maxChg', 'aboveSma200', 'minVolume', 'minCumVolume'],
       columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg',
@@ -344,8 +422,10 @@
       id:             'shorts',
       title:          'Reversal Shorts',
       mountId:        'stream-shorts',
-      // v2: threshold stored with its sign (e.g. -0.40)
-      storageKey:     'shorts.filters.v2',
+      // UI filter key -> backend config field (under CONFIG.shorts)
+      apiScope:       'shorts',
+      apiFields:      { shortMinRelatr: 'max_relatr', minRvol: 'min_rvol',
+                        minVolume: 'min_volume', minCumVolume: 'min_cum_volume' },
       sortStorageKey: 'shorts.sort.col',
       filterKeys:     ['shortMinRelatr', 'minRvol', 'minVolume', 'minCumVolume'],
       columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg',
@@ -390,26 +470,27 @@
   function createStream(cfg) {
     const mount = document.getElementById(cfg.mountId);
 
-    const streamDefaults = Object.fromEntries(
-      cfg.filterKeys.map(k => [k, FILTER_SPECS[k].default])
-    );
+    // CONFIG -> { uiKey: value } for this stream's filters
+    function filtersFromConfig(conf) {
+      const src = cfg.apiScope ? conf[cfg.apiScope] : conf;
+      return Object.fromEntries(cfg.filterKeys.map(k => [k, src[cfg.apiFields[k]]]));
+    }
+    // { uiKey: value } -> POST body for /api/alarms/config
+    function filtersPayload(f) {
+      const body = {};
+      for (const k of cfg.filterKeys) {
+        const spec = FILTER_SPECS[k];
+        let v = f[k];
+        if (spec.type === 'boolAbove') v = Boolean(v);
+        else if (spec.int) v = Math.round(Number(v));
+        else v = Number(v);
+        body[cfg.apiFields[k]] = v;
+      }
+      return cfg.apiScope ? { [cfg.apiScope]: body } : body;
+    }
 
     const activeColumns = cfg.columns || DEFAULT_COLUMNS;
 
-    function loadFilters() {
-      let saved = {};
-      try { saved = JSON.parse(localStorage.getItem(cfg.storageKey)) || {}; }
-      catch { saved = {}; }
-      const filtered = {};
-      for (const k of cfg.filterKeys) {
-        if (k in saved) filtered[k] = saved[k];
-      }
-      return { ...streamDefaults, ...filtered };
-    }
-    function saveFilters(f) {
-      try { localStorage.setItem(cfg.storageKey, JSON.stringify(f)); }
-      catch {}
-    }
     // sort = { key: column, dir: 'asc' | 'desc' }; default highest Chg% first
     const DEFAULT_SORT = { key: 'chg', dir: 'desc' };
     function loadSort() {
@@ -424,7 +505,7 @@
       try { localStorage.setItem(cfg.sortStorageKey, JSON.stringify(v)); } catch {}
     }
 
-    let FILTERS = loadFilters();
+    let FILTERS = filtersFromConfig(CONFIG);
     let SORT    = loadSort();
 
     const filterInputsHtml = cfg.filterKeys.map(k => {
@@ -435,13 +516,26 @@
       // type=text avoids locale decimal commas; dash escaped for Chrome's v-flag pattern
       return `<label>${spec.label}    <input data-f="${k}" type="text" inputmode="decimal" pattern="[0-9.,\\-]*" size="6"></label>`;
     }).join('\n        ');
+    const alarmCtlHtml = cfg.alarm ? `
+        <div class="alarm-ctl">
+          <span class="alarm-msg" data-alarm-msg></span>
+          <label title="Minimum minutes between two alarms for the same symbol">Cooldown
+            <input data-alarm-cooldown type="text" inputmode="numeric" pattern="[0-9]*" size="3"> min</label>
+          <button class="alarm-test" data-alarm-test disabled
+                  title="Send a test alarm with chart for the symbol open in the chart">Test</button>
+          <button class="alarm-toggle" data-alarm-toggle
+                  title="Send Telegram alarm + chart when a symbol passes these filters">Telegram: …</button>
+        </div>` : '';
+    const headerRightHtml = alarmCtlHtml || `
+        <div class="alarm-ctl"><span class="alarm-msg" data-alarm-msg></span></div>`;
     mount.innerHTML = `
       <div class="stream-header">
         <h2>${cfg.title}</h2>
+        ${headerRightHtml}
       </div>
       <div class="filters">
         ${filterInputsHtml}
-        <button data-reset title="Restore defaults">Reset</button>
+        <button data-reset title="Restore default filter values (saved on the server)">Reset</button>
       </div>
       <table>
         <thead>
@@ -464,11 +558,27 @@
       fEls[key] = mount.querySelector(`[data-f="${key}"]`);
     }
 
-    for (const [k, v] of Object.entries(FILTERS)) {
-      const spec = FILTER_SPECS[k];
-      if (spec && spec.type === 'boolAbove') fEls[k].checked = Boolean(v);
-      else                                   fEls[k].value   = Number(String(v).replace(',', '.'));
+    const msgEl = mount.querySelector('[data-alarm-msg]');
+    let msgTimer = null;
+    function flash(text, kind = '') {
+      msgEl.textContent = text;
+      msgEl.className = `alarm-msg ${kind}`;
+      if (msgTimer) clearTimeout(msgTimer);
+      if (kind !== 'err') msgTimer = setTimeout(() => { msgEl.textContent = ''; }, 3000);
     }
+
+    // Write FILTERS into the inputs. ``skipFocused`` leaves the field the
+    // user is typing in alone when a background config refresh lands.
+    function paintInputs(skipFocused) {
+      for (const k of cfg.filterKeys) {
+        const el = fEls[k];
+        if (skipFocused && document.activeElement === el) continue;
+        const spec = FILTER_SPECS[k];
+        if (spec.type === 'boolAbove') el.checked = Boolean(FILTERS[k]);
+        else                           el.value   = FILTERS[k];
+      }
+    }
+    paintInputs(false);
     function paintSortIndicator() {
       for (const th of headEl.querySelectorAll('th[data-col]')) {
         const active = th.dataset.col === SORT.key;
@@ -565,37 +675,69 @@
       }
     }
 
+    // Empty / half-typed ("-", "0.") / invalid input keeps the current
+    // value instead of falling back to a default -- there are none.
     function readFiltersFromInputs() {
-      const out = {};
+      const out = { ...FILTERS };
       for (const k of cfg.filterKeys) {
         const spec = FILTER_SPECS[k];
-        const defVal = streamDefaults[k];
         if (spec.type === 'boolAbove') {
           out[k] = fEls[k].checked;
           continue;
         }
         const raw = String(fEls[k].value).trim().replace(',', '.');
-        const n = raw === '' ? defVal : Number(raw);
-        out[k] = Number.isFinite(n) ? n : defVal;
+        const n = raw === '' ? NaN : Number(raw);
+        if (Number.isFinite(n)) out[k] = n;
       }
       return out;
     }
+
+    // Debounced save: every edit is written to the server config.
+    let saveTimer = null;
+    function saveSoon() {
+      if (saveTimer) clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        saveTimer = null;
+        try {
+          await postConfig(filtersPayload(FILTERS));
+          flash('saved', 'ok');
+        } catch (e) {
+          flash(`not saved: ${e.message}`, 'err');
+        }
+      }, 500);
+    }
+
     function onFilterChange() {
       FILTERS = readFiltersFromInputs();
-      saveFilters(FILTERS);
-      tickAll();
+      saveSoon();
+      if (lastData) render(lastData.dataRows, lastData.now);
     }
+
+    // Server config changed (our own save, a reset, or another browser).
+    configListeners.push((conf) => {
+      if (saveTimer) return;            // our unsaved edit wins until it is sent
+      const next = filtersFromConfig(conf);
+      const changed = cfg.filterKeys.some(k => next[k] !== FILTERS[k]);
+      if (!changed) return;
+      FILTERS = next;
+      paintInputs(true);
+      if (lastData) render(lastData.dataRows, lastData.now);
+    });
     for (const el of Object.values(fEls)) {
       el.addEventListener('input', onFilterChange);
       el.addEventListener('change', onFilterChange);
     }
-    resetBtn.addEventListener('click', () => {
-      for (const [k, v] of Object.entries(streamDefaults)) {
-        const spec = FILTER_SPECS[k];
-        if (spec.type === 'boolAbove') fEls[k].checked = Boolean(v);
-        else                            fEls[k].value   = v;
+    resetBtn.addEventListener('click', async () => {
+      if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+      try {
+        await resetConfig(cfg.id);
+        FILTERS = filtersFromConfig(CONFIG);
+        paintInputs(false);
+        if (lastData) render(lastData.dataRows, lastData.now);
+        flash('defaults restored', 'ok');
+      } catch (e) {
+        flash(`reset failed: ${e.message}`, 'err');
       }
-      onFilterChange();
     });
 
     // header click: sort by column, click again to flip direction
@@ -627,7 +769,86 @@
       selectSymbol(tr.dataset.symbol);
     });
 
-    return { render, renderError, refreshSelectionHighlight };
+    // ---------- Telegram alarm controls (alarm stream only) ----------
+    const alarm = cfg.alarm ? createAlarmControls() : null;
+
+    function createAlarmControls() {
+      const toggleEl   = mount.querySelector('[data-alarm-toggle]');
+      const testEl     = mount.querySelector('[data-alarm-test]');
+      const cooldownEl = mount.querySelector('[data-alarm-cooldown]');
+      let busy = false;
+
+      function paint(conf) {
+        const on = Boolean(conf.enabled);
+        toggleEl.classList.toggle('on', on);
+        toggleEl.textContent = on ? '🔔 Telegram: ON' : '🔕 Telegram: OFF';
+        if (!conf.telegram_configured) {
+          toggleEl.disabled = true;
+          toggleEl.title = 'TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID missing in 32_smsystem.env';
+        } else if (!busy) {
+          toggleEl.disabled = false;
+        }
+        if (document.activeElement !== cooldownEl) cooldownEl.value = conf.cooldown_minutes;
+        refreshTestButton();
+      }
+      configListeners.push(paint);
+
+      toggleEl.addEventListener('click', async () => {
+        const next = !CONFIG.enabled;
+        busy = true;
+        toggleEl.disabled = true;
+        try {
+          await postConfig({ enabled: next });
+          flash(next ? 'alarms ON' : 'alarms OFF', 'ok');
+        } catch (e) {
+          flash(e.message, 'err');
+        } finally {
+          busy = false;
+          paint(CONFIG);
+        }
+      });
+
+      cooldownEl.addEventListener('change', async () => {
+        const v = Math.round(Number(String(cooldownEl.value).trim()));
+        if (!Number.isFinite(v) || v < 1) { paint(CONFIG); return; }
+        try { await postConfig({ cooldown_minutes: v }); flash('cooldown saved', 'ok'); }
+        catch (e) { flash(e.message, 'err'); paint(CONFIG); }
+      });
+
+      function refreshTestButton() {
+        const ok = Boolean(selectedSymbol) && Boolean(CONFIG && CONFIG.telegram_configured);
+        testEl.disabled = !ok;
+        testEl.textContent = selectedSymbol ? `Test ${selectedSymbol}` : 'Test';
+      }
+
+      testEl.addEventListener('click', async () => {
+        if (!selectedSymbol) return;
+        const sym = selectedSymbol;
+        testEl.disabled = true;
+        flash(`sending ${sym}…`);
+        try {
+          const data = await readJson(await fetch(`/api/alarms/test/${encodeURIComponent(sym)}`, { method: 'POST' }));
+          flash(data.chart ? `${sym} sent with chart` : `${sym} sent (text only, chart failed)`,
+                data.chart ? 'ok' : 'err');
+        } catch (e) {
+          flash(`test failed: ${e.message}`, 'err');
+        } finally {
+          refreshTestButton();
+        }
+      });
+
+      paint(CONFIG);
+      return { refreshTestButton };
+    }
+
+    function refreshSelectionHighlightAndAlarm() {
+      refreshSelectionHighlight();
+      if (alarm) alarm.refreshTestButton();
+    }
+
+    function rerender() { if (lastData) render(lastData.dataRows, lastData.now); }
+
+    return { render, renderError, rerender, refreshSelectionHighlight: refreshSelectionHighlightAndAlarm };
   }
 
   // ---------- polling: one fetch per tick, shared by both streams ----------
@@ -636,10 +857,13 @@
 
   async function tickAll() {
     if (inFlight) return;
-    pruneBlockedInPlace();
     inFlight = true;
     try {
-      const r = await fetch(`/api/livestream/top`);
+      const [r] = await Promise.all([
+        fetch(`/api/livestream/top`),
+        // keep filters/switch in sync with the server (other browsers too)
+        fetchConfig().catch(() => {}),
+      ]);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
       const now = new Date();
@@ -662,10 +886,26 @@
   intervalEl.addEventListener('change', reschedule);
 
   // ---------- boot ----------
-  const streams = STREAM_CONFIGS.map(createStream);
-  renderBlockedPanel();
-  tickAll();
-  reschedule();
+  // Tables are built only after the server config arrives -- the page
+  // has no filter values of its own to fall back on.
+  let streams = [];
+  async function boot() {
+    for (;;) {
+      try { await fetchConfig(); break; }
+      catch (e) {
+        metaGlobalEl.innerHTML = `<span class="stale">config not loaded: ${esc(e.message)} -- retrying…</span>`;
+        await new Promise(res => setTimeout(res, 3000));
+      }
+    }
+    configListeners.push(syncBlockedFromConfig);
+    syncBlockedFromConfig(CONFIG);
+    await migrateLegacyBlocked();
+    streams = STREAM_CONFIGS.map(createStream);
+    renderBlockedPanel();
+    tickAll();
+    reschedule();
+  }
+  boot();
 </script>
 </body>
 </html>

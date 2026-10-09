@@ -9,8 +9,8 @@ Steps:
     3. filter_liquidity      20-day ADV$      → universe_liquid.csv
     4. sync_monitored_symbols write to Postgres
 
-Each sub-step also has its own log file under LOGS_DIR; this script
-writes a top-level `run.log` summarising the whole cascade.
+All steps log to the shared logs/smsystem.log (see
+backend.common.logging_config).
 """
 
 import time
@@ -22,9 +22,8 @@ from backend.stock_universe import (
     filter_liquidity,
     sync_monitored_symbols,
 )
-from backend.stock_universe.paths import LOGS_DIR
 
-log = setup_logging("run", LOGS_DIR)
+log = setup_logging("run")
 
 
 def _stage(name: str, func) -> None:

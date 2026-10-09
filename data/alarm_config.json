@@ -1,0 +1,23 @@
+{
+  "enabled": true,
+  "min_relatr": 0.4,
+  "min_rvol": 0.0,
+  "max_chg_pct": -5.0,
+  "above_sma200": true,
+  "min_volume": 5000,
+  "min_cum_volume": 100000,
+  "cooldown_minutes": 60,
+  "send_chart": true,
+  "shorts": {
+    "max_relatr": -0.4,
+    "min_rvol": 0.0,
+    "min_volume": 5000,
+    "min_cum_volume": 100000
+  },
+  "blocked": {
+    "GKOS": "2026-10-08",
+    "CRGY": "2026-10-08",
+    "RVMD": "2026-10-08",
+    "JAZZ": "2026-10-08"
+  }
+}

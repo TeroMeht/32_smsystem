@@ -38,6 +38,8 @@ from backend.alarms.dispatcher import build_alarm_sink
 from backend.common.logging_config import setup_app_logging
 from backend.datapipe import pipeline
 from backend.dependencies import close_polygon, create_db_pool, create_polygon
+from backend.alarms.alarm_generator import drain_pending as drain_alarms
+from backend.routers import alarms as alarms_routes
 from backend.routers import livestream as livestream_routes
 from backend.routers import pages as pages_routes
 
@@ -49,14 +51,15 @@ from backend.routers import pages as pages_routes
 # ---------------------------------------------------------------------------
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
+# Logging is configured at import time (not in the lifespan) so uvicorn's
+# own startup lines ("Started server process", ...) also land in
+# logs/smsystem.log -- uvicorn imports this module before logging them.
+setup_app_logging()
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Root-logger setup so every backend.* module surfaces to stdout + logs/app.log.
-    # Called first so a startup failure below is captured in the log.
-    setup_app_logging(log_dir=Path("logs"))
     logger.info("=" * 72)
     logger.info("32_smsystem starting up")
     logger.info("=" * 72)
@@ -82,6 +85,7 @@ async def lifespan(app: FastAPI):
     finally:
         logger.info("32_smsystem shutting down")
         await pipeline.shutdown(app)   # cancels the background task only
+        await drain_alarms(timeout=15)  # let in-flight Telegram sends finish
         await close_polygon(polygon)
         await pool.close()
         logger.info("32_smsystem shutdown complete")
@@ -116,4 +120,5 @@ app.mount("/ui", NoCacheStaticFiles(directory=FRONTEND_DIR), name="frontend")
 # Route composition -- all endpoints live under backend/routers/.
 # ---------------------------------------------------------------------------
 app.include_router(livestream_routes.router)
+app.include_router(alarms_routes.router)
 app.include_router(pages_routes.router)

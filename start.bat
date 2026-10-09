@@ -19,6 +19,17 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
+REM Autostart (scripts\autostart.ps1) may already be running the app in
+REM the background. If port 8001 answers, just open the dashboard -- a
+REM second uvicorn could not bind the port anyway.
+powershell -NoProfile -Command "try { (New-Object Net.Sockets.TcpClient).Connect('127.0.0.1',8001); exit 0 } catch { exit 1 }"
+if %errorlevel%==0 (
+    echo [start.bat] already running in the background -- opening the dashboard and the live log window.
+    start "32_smsystem log" powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\log_window.ps1"
+    start "" "http://127.0.0.1:8001/relatr"
+    exit /b 0
+)
+
 echo [start.bat] launching uvicorn on http://127.0.0.1:8001
 echo [start.bat] Ctrl+C to stop.
 echo.

@@ -27,9 +27,9 @@ from backend.database.universe import (
     fetch_symbol_active_map,
     upsert_symbols,
 )
-from backend.stock_universe.paths import DATA_DIR, LOGS_DIR
+from backend.stock_universe.paths import DATA_DIR
 
-log = setup_logging("sync_monitored_symbols", LOGS_DIR)
+log = setup_logging("sync_monitored_symbols")
 
 
 def _sample(rows: list[str], n: int = 10) -> str:

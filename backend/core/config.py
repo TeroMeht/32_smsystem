@@ -39,22 +39,18 @@ class Settings(PolygonSourceConfig, BaseSettings):
     ATR_SAMPLE_SESSIONS:    int
     SMA200_SAMPLE_SESSIONS: int
 
-    # # --- Alarms / Telegram ---
-    # # Same env-var names as 22_WatchlistStreamer so the bot token can be
-    # # copied across projects without renaming keys.
-    # TELEGRAM_BOT_TOKEN: str
-    # TELEGRAM_CHAT_ID:   str
-
-    # # Uptrend Reversals filter set -- mirrors the same-named filters in
-
-    # ALARM_MIN_RELATR:           float
-    # ALARM_MIN_VOLUME:           int
-    # ALARM_MIN_CUM_VOLUME:       int
-    # ALARM_REQUIRE_ABOVE_SMA200: bool
-
-    # # Per-(symbol, strategy) cooldown so a still-capitulating symbol
-    # # doesn't spam Telegram once per finalized bar.
-    # ALARM_COOLDOWN_MINUTES: int
+    # --- Alarms / Telegram ---
+    # Same env-var names as 22_WatchlistStreamer so the bot token can be
+    # copied across projects without renaming keys.
+    # Deliberately OPTIONAL (the one exception to "no defaults"): alarms
+    # are switched on/off from the dashboard, and the app must still boot
+    # without a bot configured. The UI refuses to switch alarms ON while
+    # either value is missing.
+    #
+    # Alarm thresholds + cooldown are NOT env settings any more -- they
+    # are edited in the dashboard and persisted by backend.alarms.alarm_config.
+    TELEGRAM_BOT_TOKEN: str | None = None
+    TELEGRAM_CHAT_ID:   str | None = None
 
     class Config:
         ENV_REPO = Path("C:/codebase/env-repo")

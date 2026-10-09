@@ -18,9 +18,9 @@ import pandas as pd
 from backend.common.logging_config import setup_logging
 from backend.core.config import settings
 from backend.stock_universe.http_session import build_session
-from backend.stock_universe.paths import DATA_DIR, LOGS_DIR
+from backend.stock_universe.paths import DATA_DIR
 
-log = setup_logging("filter_liquidity", LOGS_DIR)
+log = setup_logging("filter_liquidity")
 
 SESSION = build_session(settings.HTTP_WORKERS_GROUPED_DAILY)
 BASE = settings.POLYGON_BASE_URL

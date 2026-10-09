@@ -14,9 +14,9 @@ import pandas as pd
 import requests
 
 from backend.common.logging_config import setup_logging
-from backend.stock_universe.paths import DATA_DIR, LOGS_DIR
+from backend.stock_universe.paths import DATA_DIR
 
-log = setup_logging("fetch_universe", LOGS_DIR)
+log = setup_logging("fetch_universe")
 
 NASDAQ_URL = "https://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt"
 OTHER_URL  = "https://www.nasdaqtrader.com/dynamic/SymDir/otherlisted.txt"

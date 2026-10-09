@@ -15,6 +15,7 @@ __pycache__/
 # Generated data + logs (per-subsystem)
 backend/**/data/
 backend/**/logs/
+logs/
 
 
 tv_bridge.crx

@@ -42,11 +42,10 @@ StrategyFn = Callable[[CandleRow, AlarmState], Awaitable[None]]
 
 
 # One entry per active alarm strategy. Order = evaluation order per bar.
-# ALARM GENERATION DISABLED -- too many alarms firing. Re-enable by
-# uncommenting the strategy entries below. State seeding / bar folding
-# still runs so re-enabling is a one-line change.
+# Only the Uptrend Reversals setup is registered. It is a no-op until
+# Telegram alarms are switched ON from the dashboard (alarm_config).
 _STRATEGIES: List[StrategyFn] = [
-    # capitulation.run,
+    capitulation.run,
 ]
 
 
