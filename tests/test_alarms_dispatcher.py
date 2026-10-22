@@ -33,7 +33,7 @@ import pytest
 from backend.alarms import alarm_config, alarm_generator, dedupe, dispatcher, send_telegram
 from backend.alarms.alarm_config import AlarmConfig
 from backend.alarms.strategies import capitulation
-from backend.datapipe.calculations.speed import SpeedValue
+from indicators.speed import SpeedValue
 
 
 # --- Stub pool ---------------------------------------------------------------

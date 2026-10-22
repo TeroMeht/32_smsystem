@@ -25,7 +25,7 @@ import pytest
 from backend.alarms import alarm_config
 from backend.alarms.alarm_config import AlarmConfig
 from backend.alarms.strategies import capitulation
-from backend.datapipe.calculations.speed import NO_SPEED, SpeedValue
+from indicators.speed import NO_SPEED, SpeedValue
 
 
 # --- Test fixtures -----------------------------------------------------------

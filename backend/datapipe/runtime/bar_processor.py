@@ -3,7 +3,7 @@ Persistence + fan-out wrapper around a single incoming CandleRow.
 
 The per-bar state transition (compute indicators, append to history,
 advance running sums) lives on ``SymbolSessionState.apply_bar``. This
-module adds the EMA9-anchored speed (``calculations.speed``) on top,
+module adds the EMA9-anchored speed (``indicators.speed``) on top,
 then owns the two boundaries the state doesn't touch: writing the
 enriched bar (+ speed) to the livestream table and firing the
 strategy/SSE sink.
@@ -20,7 +20,7 @@ from typing import Awaitable, Callable, Optional
 import asyncpg
 
 from backend.database.writers import insert_livestream_bar
-from backend.datapipe.calculations.speed import SpeedStore, SpeedValue
+from indicators.speed import SpeedStore, SpeedValue
 from indicators.session_state import SessionStore
 from backend.datapipe.schemas import CandleRow
 

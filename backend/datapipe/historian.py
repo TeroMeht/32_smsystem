@@ -43,7 +43,7 @@ from backend.database.writers import (
     bulk_insert_intraday_bars,
     record_backfill_run,
 )
-from backend.datapipe.calculations import rvol_baseline as rvol_model
+from backend.datapipe import rvol_baseline as rvol_model
 from indicators.atr import atr_series
 from indicators.sma import sma_series
 from backend.datapipe.schemas import (

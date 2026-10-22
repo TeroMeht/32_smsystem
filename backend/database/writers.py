@@ -22,7 +22,7 @@ from typing import Iterable, Optional, Sequence
 
 import asyncpg
 
-from backend.datapipe.calculations.speed import NO_SPEED, SpeedValue
+from indicators.speed import NO_SPEED, SpeedValue
 from backend.datapipe.schemas import CandleRow, DailyBar
 from backend.datapipe.time_utils import to_helsinki
 
@@ -420,7 +420,7 @@ async def bulk_replace_rvol_baseline(
     e.g. ``09:30:00+03``).
 
     Called by ``datapipe.rvol_baseline.rebuild_rvol_model`` after
-    ``calculations.compute_rvol_baseline`` has produced the full grid.
+    ``indicators.rvol_baseline`` has produced the full grid.
     """
     if not rows:
         return

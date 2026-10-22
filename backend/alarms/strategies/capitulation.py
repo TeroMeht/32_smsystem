@@ -34,6 +34,7 @@ from backend.alarms import alarm_config
 from backend.alarms.alarm_generator import generate_signal_alarm
 from backend.alarms.state import AlarmState
 from indicators.candle_row import CandleRow
+from indicators.pct_change import next_pct_change
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +43,8 @@ SIGNAL_NAME: str = "uptrend_reversal"  # matches the frontend's stream name
 
 
 def _chg_pct(bar: CandleRow, state: AlarmState) -> Optional[float]:
-    """Same formula as readers._chg_pct (last vs previous session close)."""
-    ref = state.prev_close(bar)
-    if bar.close is None or ref is None or ref == 0:
-        return None
-    return round((float(bar.close) - ref) / ref * 100.0, 2)
+    """Chg% -- last vs previous session close (same as the dashboard)."""
+    return next_pct_change(bar.close, state.prev_close(bar))
 
 
 def _passes_filters(bar: CandleRow, state: AlarmState, cfg=None) -> bool:

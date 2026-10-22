@@ -21,6 +21,7 @@ from typing import Iterable, Optional
 
 import asyncpg
 import pandas as pd
+from indicators.pct_change import next_pct_change
 from backend.datapipe.schemas import CandleRow, MonitoredSymbols
 
 
@@ -281,7 +282,7 @@ async def load_latest_livestream_per_symbol(
     pick, another sums per symbolid, LEFT JOIN combines them.
 
     ``speed`` / ``speed_bars`` are the latest bar's EMA9-anchored speed
-    (see ``datapipe.calculations.speed``); NULL = no active cross-down.
+    (see ``indicators.speed``); NULL = no active cross-down.
 
     Unfiltered, unsorted, unlimited -- the frontend owns all display
     filters (volume floor, RVOL floor, RelATR floor, cum-volume floor,
@@ -365,25 +366,9 @@ async def load_latest_livestream_per_symbol(
         )
     # "Chg%" follows the standard quote convention: last price vs the
     # previous session's close, in premarket and regular hours alike.
-    # Backend computes the derived value so the frontend just renders it.
-
-    def _chg_pct(close: Optional[float], ref: Optional[float]) -> Optional[float]:
-        if close is None or ref is None or ref == 0:
-            return None
-        return round((close - ref) / ref * 100.0, 2)
-
-    def _pm_gap_pct(
-        pm_open: Optional[float], prev_close: Optional[float]
-    ) -> Optional[float]:
-        # Today's premarket gap = (pm_open - prev_close) / prev_close, in
-        # percent. Positive means the stock gapped UP into premarket --
-        # the Uptrend Reversals stream drops rows over its configured
-        # threshold to exclude fading spike-and-reverse setups. Missing
-        # either endpoint yields None; the frontend treats None as
-        # "gap unknown" and can choose to pass or drop.
-        if pm_open is None or prev_close is None or prev_close == 0:
-            return None
-        return round((pm_open - prev_close) / prev_close * 100.0, 2)
+    # Premarket gap = premarket open vs previous close; positive = gapped
+    # UP. Both via indicators.pct_change; None when an endpoint is missing
+    # (the frontend treats None as "unknown").
 
     out = []
     for r in rows:
@@ -416,12 +401,12 @@ async def load_latest_livestream_per_symbol(
             # EMA9-anchored speed of the latest bar (%/bar); NULL = no anchor.
             "speed": round(float(r["speed"]), 3) if r["speed"] is not None else None,
             "speed_bars": int(r["speed_bars"]) if r["speed_bars"] is not None else None,
-            "chg_pct": _chg_pct(close, prev_close),
+            "chg_pct": next_pct_change(close, prev_close),
             # Today's premarket gap = (pm_open - prev_close) / prev_close.
             # NULL when either endpoint is missing (freshly added symbol,
             # or session hasn't started). Uptrend Reversals filters on
             # this to exclude "faders" that spiked into premarket highs.
-            "premarket_gap_pct": _pm_gap_pct(pm_open, prev_close),
+            "premarket_gap_pct": next_pct_change(pm_open, prev_close),
             # sma200 from daily_indicators. NULL when the symbol has fewer
             # than 200 daily sessions on disk -- the Uptrend Reversals
             # stream drops those rows when its "Above SMA200" filter is on.

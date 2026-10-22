@@ -30,7 +30,7 @@ from backend.database.readers import (
     load_rvol_baseline_for_symbol,
 )
 from backend.database.writers import bulk_insert_livestream_bars
-from backend.datapipe.calculations.speed import SpeedStore, SpeedValue
+from indicators.speed import SpeedStore, SpeedValue
 from indicators.session_state import SessionStore
 from backend.datapipe.time_utils import HELSINKI
 from backend.datapipe.schemas import CandleRow, MonitoredSymbols

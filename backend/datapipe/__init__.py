@@ -7,7 +7,7 @@ Two entry points, one canonical bar shape:
   * livestream.run_livestream(...)   -- WS /stocks/AM consumer
 
 Both funnel bars through the same schemas.CandleRow dataclass and the same
-calculations layer (calculations.py) before persisting via
+``indicators`` package (all calculations live there) before persisting via
 backend.database.writers.
 
 All SQL / DB access lives in backend.database.* -- this package contains

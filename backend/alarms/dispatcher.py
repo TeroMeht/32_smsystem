@@ -31,7 +31,7 @@ import asyncpg
 
 from backend.alarms.state import AlarmState
 from backend.alarms.strategies import capitulation
-from backend.datapipe.calculations.speed import NO_SPEED, SpeedValue
+from indicators.speed import NO_SPEED, SpeedValue
 from backend.datapipe.runtime.bar_processor import BarSink
 from indicators.candle_row import CandleRow
 

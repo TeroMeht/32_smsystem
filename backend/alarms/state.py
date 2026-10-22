@@ -46,8 +46,9 @@ from backend.database.readers import (
     load_latest_prev_close_map,
     load_latest_sma200_map,
 )
-from backend.datapipe.calculations.speed import NO_SPEED, SpeedValue
+from indicators.speed import NO_SPEED, SpeedValue
 from indicators.candle_row import CandleRow
+from indicators.dollar_volume import next_cum_dollar_volume
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +102,10 @@ class AlarmState:
         self._cum_volume_by_sid[bar.symbolid] = (
             self._cum_volume_by_sid.get(bar.symbolid, 0) + vol
         )
-        if bar.high is not None and bar.low is not None and bar.close is not None:
-            typical = (float(bar.high) + float(bar.low) + float(bar.close)) / 3.0
-            self._cum_dollar_volume_by_sid[bar.symbolid] = (
-                self._cum_dollar_volume_by_sid.get(bar.symbolid, 0.0) + vol * typical
-            )
+        self._cum_dollar_volume_by_sid[bar.symbolid] = next_cum_dollar_volume(
+            vol, bar.high, bar.low, bar.close,
+            running_sum=self._cum_dollar_volume_by_sid.get(bar.symbolid, 0.0),
+        )
         self._speed_by_sid[bar.symbolid] = speed
 
     def sma200(self, bar: CandleRow) -> Optional[float]:

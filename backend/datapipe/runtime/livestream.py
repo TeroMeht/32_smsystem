@@ -26,7 +26,7 @@ from typing import Optional
 
 import asyncpg
 
-from backend.datapipe.calculations.speed import SpeedStore
+from indicators.speed import SpeedStore
 from backend.datapipe.runtime.aggregation import BarAggregator
 from backend.datapipe.runtime.bar_processor import BarSink, process_bar
 from backend.datapipe.runtime.priming import (
