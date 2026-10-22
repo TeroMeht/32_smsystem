@@ -43,6 +43,8 @@ CREATE UNLOGGED TABLE livestream (
     rvol    numeric(12,4),
     relatr      numeric(12,4),
     day_atr_ext numeric(12,4),
+    speed       numeric(12,4),   -- EMA9-anchored %/bar (calculations/speed.py); NULL = no anchor
+    speed_bars  integer,         -- bars since the EMA9 cross-down anchor
     PRIMARY KEY (symbolid, ts)
 );
 

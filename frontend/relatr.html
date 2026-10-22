@@ -89,6 +89,9 @@
   tbody tr.selected td { background: #1c2a34; }
   tr.updated td { background: rgba(80, 200, 120, 0.08); transition: background 0.9s; }
   td.pos { color: #22e56d; }
+  td.speed-capit   { color: #fb923c; font-weight: 600; }
+  td.speed-decline { color: #facc15; }
+  td.speed-none    { color: #5b6273; }
   td.neg { color: #ff4757; }
   a.tv-btn { color: #6aa7ff; text-decoration: none; font-size: 14px;
              padding: 0 4px; }
@@ -315,7 +318,9 @@
 
   // ---------- filters ----------
   // type: number = min, maxNumber = max (null passes),
-  //       maxNumberStrict = max (null fails), boolAbove = close > refField
+  //       maxNumberStrict = max (null fails), boolAbove = close > refField,
+  //       minOrOff = min where 0 means "filter off" (null fails while on);
+  //       scale multiplies the input before comparing (e.g. $M -> $)
   // NO default values here: every filter value comes from the backend
   // config (/api/alarms/config) and every edit is written back to it.
   // int: value is sent to the backend as a whole number.
@@ -323,9 +328,10 @@
     minRelatr:      { type: 'number',          field: 'relatr',     label: 'Min RelATR' },
     shortMinRelatr: { type: 'maxNumberStrict', field: 'relatr',     label: 'Max RelATR' },
     minRvol:        { type: 'number',          field: 'rvol',       label: 'Min RVOL' },
-    maxChg:         { type: 'maxNumberStrict', field: 'chg_pct',    label: 'Chg% ≤' },
-    minVolume:      { type: 'number',          field: 'volume',     label: 'Min Volume', int: true },
-    minCumVolume:   { type: 'number',          field: 'cum_volume', label: 'Min CumVol', int: true },
+    minDollarVolM:  { type: 'minOrOff',        field: 'cum_dollar_volume', scale: 1e6,
+                      label: 'Min $Vol M', title: 'Session $ volume so far, in $ millions (0 = off)' },
+    minSpeed:       { type: 'minOrOff',        field: 'speed',
+                      label: 'Min Speed', title: 'EMA9-anchored speed, %/bar (0.40 = capitulation, 0 = off)' },
     aboveSma200:    { type: 'boolAbove',       refField: 'sma200',  label: 'Above SMA200' },
   };
 
@@ -394,11 +400,23 @@
     sma200: { header: 'SMA200',  sortVal: (r) => r.sma200, cellHtml: (r) => `<td>${fmt(r.sma200, 2)}</td>` },
     volume: { header: 'Volume',  sortVal: (r) => r.volume, cellHtml: (r) => `<td>${fmtInt(r.volume)}</td>` },
     cumvol: { header: 'CumVol',  sortVal: (r) => r.cum_volume, cellHtml: (r) => `<td>${fmtInt(r.cum_volume)}</td>` },
+    dvol:   { header: '$Vol M',  sortVal: (r) => r.cum_dollar_volume, cellHtml: (r) => {
+      const v = r.cum_dollar_volume;
+      return `<td title="Session $ volume so far">${v == null ? '-' : (v / 1e6).toFixed(0)}</td>`;
+    }},
+    speed:  { header: 'Speed',   sortVal: (r) => r.speed, cellHtml: (r) => {
+      const v = r.speed;
+      if (v == null) return `<td class="speed-none" title="No active EMA9 cross-down">-</td>`;
+      // ReviewApp bands: < 0.20 grind, 0.20-0.40 decline, >= 0.40 capitulation
+      const cls = v >= 0.40 ? 'speed-capit' : (v >= 0.20 ? 'speed-decline' : '');
+      const bars = r.speed_bars == null ? '' : ` · ${r.speed_bars} bars since EMA9 cross-down`;
+      return `<td class="${cls}" title="%/bar${bars}">${v.toFixed(2)}</td>`;
+    }},
     tv:     { header: 'TV',      cellHtml: (r) => `<td><a class="tv-btn" href="${tvUrl(r)}" target="tradingview" onclick="event.stopPropagation()" title="Open in TradingView (reuses same tab)">↗</a></td>` },
     block:  { header: '',        cellHtml: (r) => `<td><button class="block-btn" data-block-sym="${r.symbol}" title="Hide ${r.symbol} until tomorrow">×</button></td>` },
   };
   const DEFAULT_COLUMNS = ['rank', 'symbol', 'time', 'close', 'chg',
-                           'rvol', 'relatr', 'volume', 'cumvol', 'tv'];
+                           'rvol', 'relatr', 'speed', 'dvol', 'volume', 'cumvol', 'tv'];
 
   // ---------- streams ----------
   const STREAM_CONFIGS = [
@@ -411,13 +429,13 @@
       alarm:          true,
       // UI filter key -> backend config field (top level of CONFIG)
       apiScope:       null,
-      apiFields:      { minRelatr: 'min_relatr', minRvol: 'min_rvol', maxChg: 'max_chg_pct',
-                        aboveSma200: 'above_sma200', minVolume: 'min_volume',
-                        minCumVolume: 'min_cum_volume' },
+      apiFields:      { minRelatr: 'min_relatr', minRvol: 'min_rvol',
+                        aboveSma200: 'above_sma200',
+                        minDollarVolM: 'min_dollar_volume_m', minSpeed: 'min_speed' },
       sortStorageKey: 'uptrend.sort.col',
-      filterKeys:     ['minRelatr', 'minRvol', 'maxChg', 'aboveSma200', 'minVolume', 'minCumVolume'],
+      filterKeys:     ['minRelatr', 'minRvol', 'minDollarVolM', 'minSpeed', 'aboveSma200'],
       columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg',
-                       'rvol', 'relatr', 'volume', 'cumvol', 'tv', 'block'],
+                       'rvol', 'relatr', 'speed', 'dvol', 'volume', 'cumvol', 'tv', 'block'],
     },
     {
       id:             'shorts',
@@ -426,11 +444,11 @@
       // UI filter key -> backend config field (under CONFIG.shorts)
       apiScope:       'shorts',
       apiFields:      { shortMinRelatr: 'max_relatr', minRvol: 'min_rvol',
-                        minVolume: 'min_volume', minCumVolume: 'min_cum_volume' },
+                        minDollarVolM: 'min_dollar_volume_m' },
       sortStorageKey: 'shorts.sort.col',
-      filterKeys:     ['shortMinRelatr', 'minRvol', 'minVolume', 'minCumVolume'],
+      filterKeys:     ['shortMinRelatr', 'minRvol', 'minDollarVolM'],
       columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg',
-                       'rvol', 'relatr', 'volume', 'cumvol', 'tv', 'block'],
+                       'rvol', 'relatr', 'speed', 'dvol', 'volume', 'cumvol', 'tv', 'block'],
     },
     {
       id:             'elevated_rvol',
@@ -443,7 +461,7 @@
       defaultSort:    { key: 'rvol', dir: 'desc' },
       filterKeys:     ['minRvol'],
       columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg',
-                       'rvol', 'relatr', 'volume', 'cumvol', 'tv', 'block'],
+                       'rvol', 'relatr', 'speed', 'dvol', 'volume', 'cumvol', 'tv', 'block'],
     },
   ];
 
@@ -528,7 +546,8 @@
         return `<label><input data-f="${k}" type="checkbox">${spec.label}</label>`;
       }
       // type=text avoids locale decimal commas; dash escaped for Chrome's v-flag pattern
-      return `<label>${spec.label}    <input data-f="${k}" type="text" inputmode="decimal" pattern="[0-9.,\\-]*" size="6"></label>`;
+      const tip = spec.title ? ` title="${spec.title}"` : '';
+      return `<label${tip}>${spec.label}    <input data-f="${k}" type="text" inputmode="decimal" pattern="[0-9.,\\-]*" size="6"></label>`;
     }).join('\n        ');
     const alarmCtlHtml = cfg.alarm ? `
         <div class="alarm-ctl">
@@ -647,6 +666,13 @@
             const v = r[spec.field];
             if (v === null || v === undefined) return false;
             if (v > f[k]) return false;
+            continue;
+          }
+          if (spec.type === 'minOrOff') {
+            if (!(f[k] > 0)) continue;                       // 0 = off
+            const v = r[spec.field];
+            if (v === null || v === undefined) return false;
+            if (v < f[k] * (spec.scale || 1)) return false;
             continue;
           }
           const v = r[spec.field];

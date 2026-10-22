@@ -31,7 +31,7 @@ from fastapi import FastAPI
 
 from backend.database.partitions import data_cleanup
 from backend.database.readers import get_last_backfill_run, load_active_symbol_map
-from backend.database.writers import empty_livestream_table
+from backend.database.writers import empty_livestream_table, ensure_livestream_speed_columns
 from backend.datapipe.historian import backfill_all_symbols
 from backend.datapipe.runtime.bar_processor import BarSink
 from backend.datapipe.runtime.livestream import run_livestream
@@ -65,6 +65,7 @@ async def startup(
     app.state.live_task = None
 
     await data_cleanup(pool, today)
+    await ensure_livestream_speed_columns(pool)   # older DBs: add speed / speed_bars
     await empty_livestream_table(pool)
 
 

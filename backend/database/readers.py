@@ -181,7 +181,8 @@ async def load_livestream_bars_for_symbol(
             SELECT l.ts,
                    l.open, l.high, l.low, l.close,
                    l.volume,
-                   l.vwap, l.ema9, l.rvol, l.relatr, l.day_atr_ext
+                   l.vwap, l.ema9, l.rvol, l.relatr, l.day_atr_ext,
+                   l.speed, l.speed_bars
               FROM livestream l
               JOIN monitored_symbols ms USING (symbolid)
              WHERE ms.symbol = $1
@@ -202,6 +203,8 @@ async def load_livestream_bars_for_symbol(
             "rvol": float(r["rvol"]) if r["rvol"] is not None else None,
             "relatr": float(r["relatr"]) if r["relatr"] is not None else None,
             "day_atr_ext": float(r["day_atr_ext"]) if r["day_atr_ext"] is not None else None,
+            "speed": float(r.get("speed")) if r.get("speed") is not None else None,
+            "speed_bars": int(r.get("speed_bars")) if r.get("speed_bars") is not None else None,
         }
         for r in rows
     ]
@@ -267,12 +270,18 @@ async def load_latest_livestream_per_symbol(
     pool: asyncpg.Pool,
 ) -> list[dict]:
     """
-    Latest livestream row per symbol PLUS session-cumulative volume.
+    Latest livestream row per symbol PLUS session-cumulative volume and
+    session-cumulative DOLLAR volume.
 
     Since ``livestream`` is truncated at each session boundary, SUM(volume)
     across the whole table per symbolid == today's cumulative volume from
-    session open. One CTE does the latest-per-symbol pick, another sums
-    per symbolid, LEFT JOIN combines them.
+    session open. Cumulative dollar volume is SUM(volume x typical price),
+    typical price = (high + low + close) / 3 -- the same definition the
+    35_backtesting scanner filters on. One CTE does the latest-per-symbol
+    pick, another sums per symbolid, LEFT JOIN combines them.
+
+    ``speed`` / ``speed_bars`` are the latest bar's EMA9-anchored speed
+    (see ``datapipe.calculations.speed``); NULL = no active cross-down.
 
     Unfiltered, unsorted, unlimited -- the frontend owns all display
     filters (volume floor, RVOL floor, RelATR floor, cum-volume floor,
@@ -298,13 +307,17 @@ async def load_latest_livestream_per_symbol(
                        l.rvol,
                        l.relatr,
                        l.day_atr_ext,
+                       l.speed,
+                       l.speed_bars,
                        l.volume
                   FROM livestream l
                   JOIN monitored_symbols ms USING (symbolid)
                  ORDER BY l.symbolid, l.ts DESC
             ),
             cum_vol AS (
-                SELECT symbolid, SUM(volume)::bigint AS cum_volume
+                SELECT symbolid,
+                       SUM(volume)::bigint AS cum_volume,
+                       SUM(volume * (high + low + close) / 3.0) AS cum_dollar_volume
                   FROM livestream
                  GROUP BY symbolid
             ),
@@ -339,6 +352,7 @@ async def load_latest_livestream_per_symbol(
             )
             SELECT latest.*,
                    cum_vol.cum_volume,
+                   cum_vol.cum_dollar_volume,
                    pm_open.pm_open,
                    prev_close.prev_close,
                    latest_sma200.sma200
@@ -395,6 +409,13 @@ async def load_latest_livestream_per_symbol(
             ),
             "volume": int(r["volume"]) if r["volume"] is not None else None,
             "cum_volume": int(r["cum_volume"]) if r["cum_volume"] is not None else None,
+            # Session $ volume so far: SUM(volume x (h+l+c)/3), in dollars.
+            "cum_dollar_volume": (
+                float(r["cum_dollar_volume"]) if r["cum_dollar_volume"] is not None else None
+            ),
+            # EMA9-anchored speed of the latest bar (%/bar); NULL = no anchor.
+            "speed": round(float(r["speed"]), 3) if r["speed"] is not None else None,
+            "speed_bars": int(r["speed_bars"]) if r["speed_bars"] is not None else None,
             "chg_pct": _chg_pct(close, prev_close),
             # Today's premarket gap = (pm_open - prev_close) / prev_close.
             # NULL when either endpoint is missing (freshly added symbol,
@@ -427,6 +448,30 @@ async def load_livestream_freshness(pool: asyncpg.Pool) -> dict[int, datetime]:
             "SELECT symbolid, MAX(ts) AS ts FROM livestream GROUP BY symbolid;"
         )
     return {r["symbolid"]: r["ts"] for r in rows if r["ts"] is not None}
+
+
+async def load_cum_volume_and_dollar_map(
+    pool: asyncpg.Pool,
+) -> dict[int, tuple[int, float]]:
+    """
+    symbolid -> (session cum_volume, session cum DOLLAR volume) from
+    ``livestream`` in one query. Same sums as the ``cum_vol`` CTE in
+    ``load_latest_livestream_per_symbol``, so the alarm's running totals
+    start from exactly what the dashboard shows.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT symbolid, SUM(volume)::bigint AS cum_volume, "
+            "SUM(volume * (high + low + close) / 3.0) AS cum_dollar_volume "
+            "FROM livestream GROUP BY symbolid;"
+        )
+    out: dict[int, tuple[int, float]] = {}
+    for r in rows:
+        if r["cum_volume"] is None:
+            continue
+        dv = r.get("cum_dollar_volume")
+        out[r["symbolid"]] = (int(r["cum_volume"]), float(dv) if dv is not None else 0.0)
+    return out
 
 
 async def load_cum_volume_map(pool: asyncpg.Pool) -> dict[int, int]:

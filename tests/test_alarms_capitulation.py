@@ -10,8 +10,9 @@ the bar (symbol, symbolid, ts, close, volume, relatr), and stubbing
 those decouples the test from CandleRow's exact schema.
 
 The state is a hand-built stub with ``sma200`` / ``prev_close`` /
-``cum_volume`` methods returning fixed dict lookups -- mirrors the production
-``AlarmState`` API without touching a DB.
+``cum_volume`` / ``cum_dollar_volume`` / ``speed`` methods returning fixed
+dict lookups -- mirrors the production ``AlarmState`` API without touching
+a DB.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import pytest
 from backend.alarms import alarm_config
 from backend.alarms.alarm_config import AlarmConfig
 from backend.alarms.strategies import capitulation
+from backend.datapipe.calculations.speed import NO_SPEED, SpeedValue
 
 
 # --- Test fixtures -----------------------------------------------------------
@@ -34,9 +36,12 @@ class _StubState:
 
     pool = None
 
-    def __init__(self, sma200_by_sid=None, cum_volume_by_sid=None, prev_close_by_sid=None):
+    def __init__(self, sma200_by_sid=None, cum_volume_by_sid=None, prev_close_by_sid=None,
+                 dollar_volume_by_sid=None, speed_by_sid=None):
         self._sma = sma200_by_sid or {}
         self._cv = cum_volume_by_sid or {}
+        self._dv = dollar_volume_by_sid or {}
+        self._sp = speed_by_sid or {}
         # Default prev close 120: close 110 -> -8.3% (passes Chg% <= -5).
         self._pc = prev_close_by_sid if prev_close_by_sid is not None else {1: 120.0}
 
@@ -48,6 +53,12 @@ class _StubState:
 
     def cum_volume(self, bar):
         return self._cv.get(bar.symbolid, 0)
+
+    def cum_dollar_volume(self, bar):
+        return self._dv.get(bar.symbolid, 0.0)
+
+    def speed(self, bar):
+        return self._sp.get(bar.symbolid, NO_SPEED)
 
 
 def _bar(*, relatr=1.0, close=100.0, volume=1000, symbolid=1, symbol="AAPL", rvol=1.2):
@@ -69,8 +80,8 @@ def _alarm_settings():
 
 def _cfg(**over):
     base = dict(
-        enabled=True, min_relatr=0.45, min_rvol=0.0, max_chg_pct=-5.0,
-        above_sma200=True, min_volume=100, min_cum_volume=100_000,
+        enabled=True, min_relatr=0.45, min_rvol=0.0,
+        above_sma200=True, min_dollar_volume_m=0.0, min_speed=0.0,
         cooldown_minutes=15, send_chart=False,
     )
     base.update(over)
@@ -99,16 +110,55 @@ def test_relatr_none_blocks():
     assert capitulation._passes_filters(bar, state) is False
 
 
-def test_bar_volume_below_floor_blocks():
-    bar = _bar(volume=50)  # < 100
-    state = _StubState(sma200_by_sid={1: 100.0}, cum_volume_by_sid={1: 500_000})
+def test_dollar_volume_below_floor_blocks():
+    alarm_config.set_for_tests(_cfg(min_dollar_volume_m=150))
+    bar = _bar(relatr=1.5, close=110.0)
+    state = _StubState(sma200_by_sid={1: 100.0}, dollar_volume_by_sid={1: 149_000_000.0})
     assert capitulation._passes_filters(bar, state) is False
 
 
-def test_cum_volume_below_floor_blocks():
-    bar = _bar()
-    state = _StubState(sma200_by_sid={1: 100.0}, cum_volume_by_sid={1: 50_000})
+def test_dollar_volume_at_floor_passes():
+    alarm_config.set_for_tests(_cfg(min_dollar_volume_m=150))
+    bar = _bar(relatr=1.5, close=110.0)
+    state = _StubState(sma200_by_sid={1: 100.0}, dollar_volume_by_sid={1: 150_000_000.0})
+    assert capitulation._passes_filters(bar, state) is True
+
+
+def test_dollar_volume_zero_means_off():
+    """0 = gate off: a symbol with no $ volume yet still passes."""
+    bar = _bar(relatr=1.5, close=110.0)
+    state = _StubState(sma200_by_sid={1: 100.0})
+    assert capitulation._passes_filters(bar, state) is True
+
+
+def test_speed_below_floor_blocks():
+    alarm_config.set_for_tests(_cfg(min_speed=0.40))
+    bar = _bar(relatr=1.5, close=110.0)
+    state = _StubState(sma200_by_sid={1: 100.0},
+                       speed_by_sid={1: SpeedValue(speed=0.25, bars=6)})
     assert capitulation._passes_filters(bar, state) is False
+
+
+def test_speed_at_floor_passes():
+    alarm_config.set_for_tests(_cfg(min_speed=0.40))
+    bar = _bar(relatr=1.5, close=110.0)
+    state = _StubState(sma200_by_sid={1: 100.0},
+                       speed_by_sid={1: SpeedValue(speed=0.40, bars=6)})
+    assert capitulation._passes_filters(bar, state) is True
+
+
+def test_no_speed_blocks_when_gate_on():
+    """No active EMA9 cross-down = no speed = can't confirm a fast move."""
+    alarm_config.set_for_tests(_cfg(min_speed=0.40))
+    bar = _bar(relatr=1.5, close=110.0)
+    state = _StubState(sma200_by_sid={1: 100.0})       # NO_SPEED
+    assert capitulation._passes_filters(bar, state) is False
+
+
+def test_speed_zero_means_off():
+    bar = _bar(relatr=1.5, close=110.0)
+    state = _StubState(sma200_by_sid={1: 100.0})       # NO_SPEED, gate off
+    assert capitulation._passes_filters(bar, state) is True
 
 
 def test_sma200_missing_blocks_when_gate_on():
@@ -139,19 +189,13 @@ def test_rvol_none_blocks():
     assert capitulation._passes_filters(bar, state) is False
 
 
-def test_chg_above_ceiling_blocks():
-    """-2% day is not deep enough for a -5% ceiling."""
-    bar = _bar(relatr=1.5, close=110.0, volume=5000)
-    state = _StubState(sma200_by_sid={1: 100.0}, cum_volume_by_sid={1: 500_000},
-                       prev_close_by_sid={1: 112.25})
-    assert capitulation._passes_filters(bar, state) is False
-
-
-def test_chg_missing_prev_close_blocks():
-    bar = _bar(relatr=1.5, close=110.0, volume=5000)
-    state = _StubState(sma200_by_sid={1: 100.0}, cum_volume_by_sid={1: 500_000},
+def test_chg_and_volume_no_longer_gate():
+    """Chg%, per-bar volume and CumVol filters were removed: a flat day on
+    a tiny bar with no prev close still passes the other gates."""
+    bar = _bar(relatr=1.5, close=110.0, volume=1)
+    state = _StubState(sma200_by_sid={1: 100.0}, cum_volume_by_sid={1: 1},
                        prev_close_by_sid={})
-    assert capitulation._passes_filters(bar, state) is False
+    assert capitulation._passes_filters(bar, state) is True
 
 
 def test_sma200_gate_off_ignores_sma200():
@@ -227,7 +271,7 @@ def test_config_persists_roundtrip(tmp_path, monkeypatch):
     assert cfg.enabled is True
     assert cfg.min_relatr == 0.6
     assert cfg.cooldown_minutes == 20
-    assert cfg.min_volume == AlarmConfig().min_volume  # untouched default
+    assert cfg.min_speed == AlarmConfig().min_speed  # untouched default
 
 
 def test_shorts_filters_partial_update_and_reset(tmp_path, monkeypatch):
@@ -243,7 +287,7 @@ def test_shorts_filters_partial_update_and_reset(tmp_path, monkeypatch):
     ))
     cfg = alarm_config.get()
     assert cfg.shorts.max_relatr == -0.9
-    assert cfg.shorts.min_volume == 5_000          # untouched shorts field kept
+    assert cfg.shorts.min_dollar_volume_m == 0.0   # untouched shorts field kept
 
     alarm_config.reset("shorts")
     cfg = alarm_config.get()

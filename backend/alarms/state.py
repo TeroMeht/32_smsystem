@@ -13,10 +13,14 @@ Uptrend Reversals filter set (relatr.html) uses:
     * ``prev_close`` -- latest daily close (yesterday's), for the
       Chg% gate. Session constant, loaded once at seed time.
 
-    * ``cum_volume`` -- running sum of ``livestream.volume`` since
-      session start. Seeded from the DB on FIRST BAR (lazy), then
-      incremented per-bar in the sink so it stays in lockstep with the
+    * ``cum_volume`` / ``cum_dollar_volume`` -- running sums of
+      ``livestream.volume`` and volume x typical price since session
+      start. Seeded from the DB on FIRST BAR (lazy), then incremented
+      per-bar in the sink so they stay in lockstep with the
       /api/livestream/top payload the frontend reads.
+
+    * ``speed`` -- the EMA9-anchored speed the datapipe computed for the
+      symbol's latest bar (handed to the sink with the bar).
 
 Seeding is deferred to the first bar rather than done at ``main`` /
 ``pipeline.startup`` time because ``pipeline.startup`` empties
@@ -38,10 +42,11 @@ from typing import Optional
 import asyncpg
 
 from backend.database.readers import (
-    load_cum_volume_map,
+    load_cum_volume_and_dollar_map,
     load_latest_prev_close_map,
     load_latest_sma200_map,
 )
+from backend.datapipe.calculations.speed import NO_SPEED, SpeedValue
 from indicators.candle_row import CandleRow
 
 logger = logging.getLogger(__name__)
@@ -52,7 +57,7 @@ class AlarmState:
 
     __slots__ = (
         "_pool", "_seeded", "_sma200_by_sid", "_cum_volume_by_sid",
-        "_prev_close_by_sid",
+        "_cum_dollar_volume_by_sid", "_prev_close_by_sid", "_speed_by_sid",
     )
 
     def __init__(self, pool: asyncpg.Pool) -> None:
@@ -60,7 +65,9 @@ class AlarmState:
         self._seeded = False
         self._sma200_by_sid: dict[int, float] = {}
         self._cum_volume_by_sid: dict[int, int] = {}
+        self._cum_dollar_volume_by_sid: dict[int, float] = {}
         self._prev_close_by_sid: dict[int, float] = {}
+        self._speed_by_sid: dict[int, SpeedValue] = {}
 
     @property
     def pool(self) -> asyncpg.Pool:
@@ -71,13 +78,16 @@ class AlarmState:
         """
         One-shot lazy seed. Called by the sink before it processes each
         bar; the second call onward is a cheap boolean check. Loads
-        SMA200, previous close and session cum_volume from the DB.
+        SMA200, previous close and session cum_volume / cum $ volume
+        from the DB.
         """
         if self._seeded:
             return
         self._sma200_by_sid = await load_latest_sma200_map(self._pool)
         self._prev_close_by_sid = await load_latest_prev_close_map(self._pool)
-        self._cum_volume_by_sid = await load_cum_volume_map(self._pool)
+        sums = await load_cum_volume_and_dollar_map(self._pool)
+        self._cum_volume_by_sid = {sid: v for sid, (v, _dv) in sums.items()}
+        self._cum_dollar_volume_by_sid = {sid: dv for sid, (_v, dv) in sums.items()}
         self._seeded = True
         logger.info(
             "AlarmState seeded: %d sma200, %d prev_close, %d cum_volume",
@@ -85,12 +95,18 @@ class AlarmState:
             len(self._cum_volume_by_sid),
         )
 
-    def add_bar(self, bar: CandleRow) -> None:
-        """Fold this bar's volume into the running per-symbol sum."""
+    def add_bar(self, bar: CandleRow, speed: SpeedValue = NO_SPEED) -> None:
+        """Fold this bar's volume / $ volume into the running sums; keep its speed."""
         vol = int(bar.volume) if bar.volume is not None else 0
         self._cum_volume_by_sid[bar.symbolid] = (
             self._cum_volume_by_sid.get(bar.symbolid, 0) + vol
         )
+        if bar.high is not None and bar.low is not None and bar.close is not None:
+            typical = (float(bar.high) + float(bar.low) + float(bar.close)) / 3.0
+            self._cum_dollar_volume_by_sid[bar.symbolid] = (
+                self._cum_dollar_volume_by_sid.get(bar.symbolid, 0.0) + vol * typical
+            )
+        self._speed_by_sid[bar.symbolid] = speed
 
     def sma200(self, bar: CandleRow) -> Optional[float]:
         """Latest SMA200 for this symbol, or ``None`` if warm-up short."""
@@ -99,6 +115,14 @@ class AlarmState:
     def cum_volume(self, bar: CandleRow) -> int:
         """Session cumulative volume for this symbol (0 if unseen)."""
         return self._cum_volume_by_sid.get(bar.symbolid, 0)
+
+    def cum_dollar_volume(self, bar: CandleRow) -> float:
+        """Session cumulative $ volume (volume x typical price) for this symbol (0 if unseen)."""
+        return self._cum_dollar_volume_by_sid.get(bar.symbolid, 0.0)
+
+    def speed(self, bar: CandleRow) -> SpeedValue:
+        """EMA9-anchored speed of this symbol's latest bar (NO_SPEED if none)."""
+        return self._speed_by_sid.get(bar.symbolid, NO_SPEED)
 
     def prev_close(self, bar: CandleRow) -> Optional[float]:
         """Previous session's daily close, or ``None`` if not on disk."""

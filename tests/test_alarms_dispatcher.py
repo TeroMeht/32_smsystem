@@ -12,8 +12,9 @@ Telegram sender. Exercises the paths the frontend cares about:
     * chart path: photo with caption, text fallback when the chart fails,
     * a second passing bar inside the cooldown window is deduped,
     * a bar that fails any gate never reaches Telegram,
-    * cum_volume increments per bar so a symbol seeded just under the
-      floor rises above it as bars flow in.
+    * cum $ volume increments per bar so a symbol seeded just under the
+      floor rises above it as bars flow in,
+    * the speed handed to the sink with the bar gates the alarm.
 
 No live pool, no live Telegram. Assertions are on the spy that
 replaces ``send_telegram_message`` at import time. Delivery runs in a
@@ -32,6 +33,7 @@ import pytest
 from backend.alarms import alarm_config, alarm_generator, dedupe, dispatcher, send_telegram
 from backend.alarms.alarm_config import AlarmConfig
 from backend.alarms.strategies import capitulation
+from backend.datapipe.calculations.speed import SpeedValue
 
 
 # --- Stub pool ---------------------------------------------------------------
@@ -42,7 +44,7 @@ class _StubConn:
     Answers the three fetch() shapes the alarm state issues:
         * SELECT ... sma200 FROM daily_indicators ...
         * SELECT ... close FROM daily ...            (prev close)
-        * SELECT symbolid, SUM(volume) ... FROM livestream ...
+        * SELECT symbolid, SUM(volume), SUM(volume x typical) ... FROM livestream ...
     Returned rows are asyncpg-record-like dicts.
     """
 
@@ -105,8 +107,8 @@ def _bar(*, minute=30, relatr=1.5, close=110.0, volume=5000,
 
 def _cfg(**over):
     base = dict(
-        enabled=True, min_relatr=0.45, min_rvol=0.0, max_chg_pct=-5.0,
-        above_sma200=True, min_volume=100, min_cum_volume=100_000,
+        enabled=True, min_relatr=0.45, min_rvol=0.0,
+        above_sma200=True, min_dollar_volume_m=0.0, min_speed=0.0,
         cooldown_minutes=15, send_chart=False,
     )
     base.update(over)
@@ -128,9 +130,12 @@ def _isolate(monkeypatch):
     return tg_spy
 
 
-async def _run(sink, bar):
+async def _run(sink, bar, speed=None):
     """Feed one bar and wait for its background Telegram delivery."""
-    await sink(bar)
+    if speed is None:
+        await sink(bar)
+    else:
+        await sink(bar, speed)
     await alarm_generator.drain_pending()
 
 
@@ -196,17 +201,51 @@ async def test_symbol_missing_sma200_is_dropped_when_gate_on(_isolate):
 
 
 @pytest.mark.asyncio
-async def test_cum_volume_accumulates_across_bars(_isolate):
-    """Symbol seeded just under the CumVol floor rises above it as bars flow."""
+async def test_dollar_volume_accumulates_across_bars(_isolate):
+    """Symbol seeded just under the $Vol floor rises above it as bars flow."""
+    alarm_config.set_for_tests(_cfg(min_dollar_volume_m=150))
     pool = _StubPool(
         sma200_rows=[{"symbolid": 1, "sma200": 100.0}],
-        # Seeded at 90k (below 100k floor). One bar of 20k volume pushes
-        # the running total to 110k -- above the floor, so the alarm fires.
-        cum_volume_rows=[{"symbolid": 1, "cum_volume": 90_000}],
+        # Seeded at $140M (below the $150M floor). One bar of 100k shares
+        # at a typical price of 110 adds $11M -> $151M, so the alarm fires.
+        cum_volume_rows=[{"symbolid": 1, "cum_volume": 1_000_000,
+                          "cum_dollar_volume": 140_000_000.0}],
     )
     sink = dispatcher.build_alarm_sink(pool)
 
-    await _run(sink, _bar(relatr=1.5, close=110.0, volume=20_000))
+    await _run(sink, _bar(relatr=1.5, close=110.0, volume=100_000))
+    assert _isolate.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_dollar_volume_below_floor_no_alarm(_isolate):
+    alarm_config.set_for_tests(_cfg(min_dollar_volume_m=150))
+    pool = _StubPool(
+        sma200_rows=[{"symbolid": 1, "sma200": 100.0}],
+        cum_volume_rows=[{"symbolid": 1, "cum_volume": 1_000_000,
+                          "cum_dollar_volume": 100_000_000.0}],
+    )
+    sink = dispatcher.build_alarm_sink(pool)
+    await _run(sink, _bar(relatr=1.5, close=110.0, volume=1_000))
+    assert _isolate.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_speed_from_datapipe_gates_alarm(_isolate):
+    """The speed passed to the sink with the bar is what the speed gate reads."""
+    alarm_config.set_for_tests(_cfg(min_speed=0.40))
+    pool = _StubPool(
+        sma200_rows=[{"symbolid": 1, "sma200": 100.0}],
+        cum_volume_rows=[{"symbolid": 1, "cum_volume": 500_000}],
+    )
+    sink = dispatcher.build_alarm_sink(pool)
+
+    await _run(sink, _bar(minute=30, relatr=1.5, close=110.0))                 # no speed
+    await _run(sink, _bar(minute=32, relatr=1.5, close=110.0),
+               SpeedValue(speed=0.25, bars=6))                                 # too slow
+    assert _isolate.await_count == 0
+    await _run(sink, _bar(minute=34, relatr=1.5, close=110.0),
+               SpeedValue(speed=0.55, bars=7))                                 # capitulation
     assert _isolate.await_count == 1
 
 

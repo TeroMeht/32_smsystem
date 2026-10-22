@@ -10,7 +10,9 @@ Per bar the dispatcher:
     1. lazily seeds ``AlarmState`` on the first bar (loads SMA200 and
        cum_volume from the DB -- deferred until here so REST-primed
        bars from ``_initialize_livestream`` are already in the table),
-    2. folds the bar's volume into the running cum_volume,
+    2. folds the bar's volume into the running cum_volume / cum $ volume
+       and records its speed (computed by the datapipe, passed in with
+       the bar),
     3. runs each registered alarm strategy against (bar, state),
        sequentially and order-stable,
     4. each strategy owns its own detection and delegates dedupe +
@@ -29,6 +31,7 @@ import asyncpg
 
 from backend.alarms.state import AlarmState
 from backend.alarms.strategies import capitulation
+from backend.datapipe.calculations.speed import NO_SPEED, SpeedValue
 from backend.datapipe.runtime.bar_processor import BarSink
 from indicators.candle_row import CandleRow
 
@@ -67,15 +70,15 @@ def build_alarm_sink(
     state = AlarmState(pool)
     strats = list(strategies) if strategies is not None else list(_STRATEGIES)
 
-    async def sink(bar: CandleRow) -> None:
+    async def sink(bar: CandleRow, speed: SpeedValue = NO_SPEED) -> None:
         # Lazy seed on first bar: by now _initialize_livestream has
         # persisted today's REST-primed bars, so cum_volume reads a
         # correct snapshot rather than the empty post-truncate table.
         await state.ensure_seeded()
 
         # Update running state BEFORE strategies so they see this bar's
-        # volume in the cum_volume they read.
-        state.add_bar(bar)
+        # volume in the cum_volume / cum $ volume and its speed.
+        state.add_bar(bar, speed)
         for run in strats:
             try:
                 await run(bar, state)

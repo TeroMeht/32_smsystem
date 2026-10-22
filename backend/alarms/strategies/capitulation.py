@@ -2,8 +2,8 @@
 Uptrend Reversals alarm -- the only setup that goes to Telegram.
 
 Fires for the same rows the "Uptrend Reversals" stream in relatr.html
-shows: a stock in an established uptrend that is currently extending
-DOWN from VWAP with real volume and a meaningful down day.
+shows: a stock (optionally in an established uptrend) that is currently
+extending DOWN from VWAP, fast, in a name with real dollar volume.
 
 Thresholds come from ``alarm_config`` -- the dashboard pushes its
 Uptrend Reversals filter inputs there, so the alarm and the table use
@@ -11,14 +11,16 @@ the same numbers. Nothing is evaluated unless the Telegram switch in
 the UI is ON, and symbols blocked from the dashboard ("x") are skipped.
 
 Filters, per bar (same semantics as the frontend filter loop):
-    * ``bar.relatr  >= min_relatr``      THE trigger (positive relatr =
-                                         close extended DOWN from VWAP)
-    * ``bar.volume  >= min_volume``      per-bar volume floor
-    * ``cum_volume  >= min_cum_volume``  session cumulative volume floor
-    * ``bar.rvol    >= min_rvol``        (None fails, as in the UI)
-    * ``chg_pct     <= max_chg_pct``     vs previous daily close (None fails)
-    * ``bar.close   >  sma200``          when above_sma200 is on; missing
-                                         SMA200 = "trend unknown -> drop"
+    * ``bar.relatr        >= min_relatr``  THE trigger (positive relatr =
+                                           close extended DOWN from VWAP)
+    * ``cum $ volume      >= min_dollar_volume_m`` x $1M   (0 = off)
+                                           session SUM(volume x (h+l+c)/3)
+    * ``speed             >= min_speed``   EMA9-anchored %/bar (0 = off);
+                                           no active cross-down = no speed
+                                           = fails while the gate is on
+    * ``bar.rvol          >= min_rvol``    (None fails, as in the UI)
+    * ``bar.close         >  sma200``      when above_sma200 is on; missing
+                                           SMA200 = "trend unknown -> drop"
 
 Dedupe + chart + Telegram delivery live in ``alarm_generator``.
 """
@@ -55,24 +57,22 @@ def _passes_filters(bar: CandleRow, state: AlarmState, cfg=None) -> bool:
     if bar.relatr is None or float(bar.relatr) < cfg.min_relatr:
         return False
 
-    # 2) Per-bar volume floor.
-    if bar.volume is None or float(bar.volume) < cfg.min_volume:
-        return False
+    # 2) Session cumulative $ volume floor (0 = off).
+    if cfg.min_dollar_volume_m > 0:
+        if state.cum_dollar_volume(bar) < cfg.min_dollar_volume_m * 1_000_000:
+            return False
 
-    # 3) Session cumulative volume floor.
-    if state.cum_volume(bar) < cfg.min_cum_volume:
-        return False
+    # 3) Speed of the move (0 = off). No anchor -> no speed -> fails.
+    if cfg.min_speed > 0:
+        sp = state.speed(bar).speed
+        if sp is None or sp < cfg.min_speed:
+            return False
 
     # 4) RVOL floor -- None fails, matching the UI's ``number`` filter.
     if bar.rvol is None or float(bar.rvol) < cfg.min_rvol:
         return False
 
-    # 5) Chg% ceiling -- None fails, matching ``maxNumberStrict``.
-    chg = _chg_pct(bar, state)
-    if chg is None or chg > cfg.max_chg_pct:
-        return False
-
-    # 6) Uptrend gate. Missing SMA200 = "trend unknown -> drop".
+    # 5) Uptrend gate. Missing SMA200 = "trend unknown -> drop".
     if cfg.above_sma200:
         sma = state.sma200(bar)
         if sma is None:
@@ -88,10 +88,12 @@ def _details(bar: CandleRow, state: AlarmState) -> str:
         return "-" if v is None else f"{float(v):.{d}f}"
 
     chg = _chg_pct(bar, state)
+    sp = state.speed(bar)
     return (
         f"Close: {f(bar.close)}  Chg: {f(chg)}%\n"
         f"RelATR: {f(bar.relatr)}  RVOL: {f(bar.rvol)}\n"
-        f"Vol: {int(bar.volume or 0):,}  CumVol: {state.cum_volume(bar):,}\n"
+        f"Speed: {f(sp.speed, 3)}%/bar ({sp.bars if sp.bars is not None else '-'} bars)  "
+        f"$Vol: {state.cum_dollar_volume(bar) / 1e6:,.0f}M\n"
         f"SMA200: {f(state.sma200(bar))}"
     )
 
@@ -107,9 +109,9 @@ async def run(bar: CandleRow, state: AlarmState) -> None:
         return
 
     logger.debug(
-        "uptrend reversal %s @ %s | close=%.4f relatr=%.2f vol=%s cumvol=%s sma200=%s",
+        "uptrend reversal %s @ %s | close=%.4f relatr=%.2f speed=%s dvol=%.0f sma200=%s",
         bar.symbol, bar.ts, float(bar.close), float(bar.relatr),
-        bar.volume, state.cum_volume(bar), state.sma200(bar),
+        state.speed(bar).speed, state.cum_dollar_volume(bar), state.sma200(bar),
     )
     await generate_signal_alarm(
         bar=bar,

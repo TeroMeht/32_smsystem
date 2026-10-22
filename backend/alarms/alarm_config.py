@@ -42,15 +42,13 @@ class ShortsFilters(BaseModel):
 
     max_relatr: float = -0.40         # relatr <= (negative = extended UP from VWAP)
     min_rvol: float = 0.0
-    min_volume: int = 5_000
-    min_cum_volume: int = 100_000
+    min_dollar_volume_m: float = 0.0  # session cum $ volume >= this many $M (0 = off)
 
 
 class ShortsFiltersUpdate(BaseModel):
     max_relatr: float | None = None
     min_rvol: float | None = None
-    min_volume: int | None = None
-    min_cum_volume: int | None = None
+    min_dollar_volume_m: float | None = None
 
 
 class ElevatedRvolFilters(BaseModel):
@@ -65,8 +63,8 @@ class ElevatedRvolFiltersUpdate(BaseModel):
 
 # Field groups for Reset: each table's Reset only restores its own filters.
 UPTREND_FILTER_FIELDS = (
-    "min_relatr", "min_rvol", "max_chg_pct", "above_sma200",
-    "min_volume", "min_cum_volume",
+    "min_relatr", "min_rvol", "above_sma200",
+    "min_dollar_volume_m", "min_speed",
 )
 
 
@@ -82,10 +80,13 @@ class AlarmConfig(BaseModel):
     # Uptrend Reversals filter set (same semantics as the UI filters).
     min_relatr: float = 0.40          # relatr >= (positive = extended DOWN from VWAP)
     min_rvol: float = 0.0             # rvol   >= (None fails, like the UI)
-    max_chg_pct: float = -5.0         # chg%   <= vs previous close (None fails)
     above_sma200: bool = True         # close  >  latest SMA200 (missing SMA200 fails)
-    min_volume: int = 5_000           # per-bar volume >=
-    min_cum_volume: int = 100_000     # session cumulative volume >=
+    # Session cumulative DOLLAR volume >= this many $ millions
+    # (SUM(volume x (h+l+c)/3) since session start). 0 = off.
+    min_dollar_volume_m: float = 0.0
+    # EMA9-anchored speed of the move >= this %/bar (0.40 = capitulation).
+    # Bars with no active EMA9 cross-down have no speed and fail. 0 = off.
+    min_speed: float = 0.0
 
     # Per-(symbol, setup) cooldown so a still-qualifying symbol doesn't
     # re-alarm on every finalized 2-min bar.
@@ -112,10 +113,9 @@ class AlarmConfigUpdate(BaseModel):
     enabled: bool | None = None
     min_relatr: float | None = None
     min_rvol: float | None = None
-    max_chg_pct: float | None = None
     above_sma200: bool | None = None
-    min_volume: int | None = None
-    min_cum_volume: int | None = None
+    min_dollar_volume_m: float | None = Field(default=None, ge=0)
+    min_speed: float | None = Field(default=None, ge=0)
     cooldown_minutes: int | None = Field(default=None, ge=1, le=24 * 60)
     send_chart: bool | None = None
     shorts: ShortsFiltersUpdate | None = None

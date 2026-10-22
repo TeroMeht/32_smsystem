@@ -26,6 +26,7 @@ from typing import Optional
 
 import asyncpg
 
+from backend.datapipe.calculations.speed import SpeedStore
 from backend.datapipe.runtime.aggregation import BarAggregator
 from backend.datapipe.runtime.bar_processor import BarSink, process_bar
 from backend.datapipe.runtime.priming import (
@@ -103,6 +104,7 @@ async def _initialize_livestream(
     pool: asyncpg.Pool,
     polygon: PolygonSource,
     store: SessionStore,
+    speed_store: SpeedStore,
     symbol_map: MonitoredSymbols,
     concurrency: int = 10,
 ) -> None:
@@ -112,16 +114,17 @@ async def _initialize_livestream(
          REST-fetch today's already-occurred bars -- these are
          independent I/O against different backends, so they run
          concurrently via ``asyncio.gather``.
-      2. Enrich the fetched bars via ``apply_bar`` (needs seeded state)
-         and bulk-insert into livestream.
+      2. Enrich the fetched bars via ``apply_bar`` (needs seeded state),
+         prime the speed trackers on them, and bulk-insert into
+         livestream.
     """
     today_et = session_date_et(datetime.now(timezone.utc))
     _, fetched = await asyncio.gather(
         seed_session_state(pool, store, symbol_map, today_et),
         _fetch_today_intraday_bars(polygon, symbol_map, today_et, concurrency),
     )
-    enriched = enrich_prime_bars(store, fetched) # jatkojalostaa tämän päivän baarit
-    await bulk_persist_bars(pool, enriched)
+    enriched, speeds = enrich_prime_bars(store, speed_store, fetched) # jatkojalostaa tämän päivän baarit
+    await bulk_persist_bars(pool, enriched, speeds)
 
 
 
@@ -133,8 +136,9 @@ async def run_livestream(
 ) -> None:
 
     store = SessionStore()
+    speed_store = SpeedStore()     # same session lifetime as ``store``
     try:
-        await _initialize_livestream(pool, polygon, store, symbol_map)
+        await _initialize_livestream(pool, polygon, store, speed_store, symbol_map)
 
         aggregators: dict[str, BarAggregator] = {}
 
@@ -148,7 +152,7 @@ async def run_livestream(
             if bar is None:
                 return
             try:
-                await process_bar(pool, store, bar, sink=sink)
+                await process_bar(pool, store, bar, sink=sink, speed_store=speed_store)
                 logger.info(
                     "%s %s | O=%.4f H=%.4f L=%.4f C=%.4f V=%d rvol=%s relatr=%s dayext=%s",
                     bar.symbol,

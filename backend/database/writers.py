@@ -22,6 +22,7 @@ from typing import Iterable, Optional, Sequence
 
 import asyncpg
 
+from backend.datapipe.calculations.speed import NO_SPEED, SpeedValue
 from backend.datapipe.schemas import CandleRow, DailyBar
 from backend.datapipe.time_utils import to_helsinki
 
@@ -33,11 +34,27 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+async def ensure_livestream_speed_columns(pool: asyncpg.Pool) -> None:
+    """
+    Add the speed columns to an existing ``livestream`` table (DBs created
+    before speed existed). Idempotent; runs once at startup. Fresh DBs get
+    them from schema.sql.
+    """
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            ALTER TABLE livestream
+                ADD COLUMN IF NOT EXISTS speed      numeric(12,4),
+                ADD COLUMN IF NOT EXISTS speed_bars integer;
+            """
+        )
+
+
 _INSERT_LIVESTREAM_SQL = """
     INSERT INTO livestream
         (symbolid, ts, open, high, low, close, volume,
-         vwap, ema9, rvol, relatr, day_atr_ext)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         vwap, ema9, rvol, relatr, day_atr_ext, speed, speed_bars)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
     ON CONFLICT (symbolid, ts) DO UPDATE SET
         open        = EXCLUDED.open,
         high        = EXCLUDED.high,
@@ -48,24 +65,32 @@ _INSERT_LIVESTREAM_SQL = """
         ema9        = EXCLUDED.ema9,
         rvol    = EXCLUDED.rvol,
         relatr      = EXCLUDED.relatr,
-        day_atr_ext = EXCLUDED.day_atr_ext;
+        day_atr_ext = EXCLUDED.day_atr_ext,
+        speed       = EXCLUDED.speed,
+        speed_bars  = EXCLUDED.speed_bars;
 """
 
 
-async def insert_livestream_bar(pool: asyncpg.Pool, bar: CandleRow) -> None:
-    """Upsert one enriched bar into livestream (indicators required)."""
+async def insert_livestream_bar(
+    pool: asyncpg.Pool,
+    bar: CandleRow,
+    speed: SpeedValue = NO_SPEED,
+) -> None:
+    """Upsert one enriched bar (+ its speed) into livestream."""
     async with pool.acquire() as conn:
         await conn.execute(
             _INSERT_LIVESTREAM_SQL,
             bar.symbolid, bar.ts,
             bar.open, bar.high, bar.low, bar.close, bar.volume,
             bar.vwap, bar.ema9, bar.rvol, bar.relatr, bar.day_atr_ext,
+            speed.speed, speed.bars,
         )
 
 
 async def bulk_insert_livestream_bars(
     pool: asyncpg.Pool,
     bars: Sequence[CandleRow],
+    speeds: Optional[Sequence[SpeedValue]] = None,
 ) -> None:
     """
     Bulk-insert already-enriched bars into livestream. Used by the
@@ -79,11 +104,16 @@ async def bulk_insert_livestream_bars(
     """
     if not bars:
         return
+    if speeds is None:
+        speeds = [NO_SPEED] * len(bars)
+    if len(speeds) != len(bars):
+        raise ValueError(f"speeds ({len(speeds)}) must align with bars ({len(bars)})")
     rows = [
         (b.symbolid, b.ts,
          b.open, b.high, b.low, b.close, b.volume,
-         b.vwap, b.ema9, b.rvol, b.relatr, b.day_atr_ext)
-        for b in bars
+         b.vwap, b.ema9, b.rvol, b.relatr, b.day_atr_ext,
+         s.speed, s.bars)
+        for b, s in zip(bars, speeds)
     ]
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -101,7 +131,9 @@ async def bulk_insert_livestream_bars(
                     ema9        numeric(12,4),
                     rvol    numeric(12,4),
                     relatr      numeric(12,4),
-                    day_atr_ext numeric(12,4)
+                    day_atr_ext numeric(12,4),
+                    speed       numeric(12,4),
+                    speed_bars  integer
                 ) ON COMMIT DROP;
                 """
             )
@@ -109,15 +141,16 @@ async def bulk_insert_livestream_bars(
                 "_stage_livestream",
                 records=rows,
                 columns=["symbolid", "ts", "open", "high", "low", "close", "volume",
-                         "vwap", "ema9", "rvol", "relatr", "day_atr_ext"],
+                         "vwap", "ema9", "rvol", "relatr", "day_atr_ext",
+                         "speed", "speed_bars"],
             )
             await conn.execute(
                 """
                 INSERT INTO livestream
                     (symbolid, ts, open, high, low, close, volume,
-                     vwap, ema9, rvol, relatr, day_atr_ext)
+                     vwap, ema9, rvol, relatr, day_atr_ext, speed, speed_bars)
                 SELECT symbolid, ts, open, high, low, close, volume,
-                       vwap, ema9, rvol, relatr, day_atr_ext
+                       vwap, ema9, rvol, relatr, day_atr_ext, speed, speed_bars
                   FROM _stage_livestream
                 ON CONFLICT (symbolid, ts) DO UPDATE SET
                     open        = EXCLUDED.open,
@@ -129,7 +162,9 @@ async def bulk_insert_livestream_bars(
                     ema9        = EXCLUDED.ema9,
                     rvol    = EXCLUDED.rvol,
                     relatr      = EXCLUDED.relatr,
-                    day_atr_ext = EXCLUDED.day_atr_ext;
+                    day_atr_ext = EXCLUDED.day_atr_ext,
+                    speed       = EXCLUDED.speed,
+                    speed_bars  = EXCLUDED.speed_bars;
                 """
             )
 

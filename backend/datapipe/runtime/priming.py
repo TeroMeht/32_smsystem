@@ -7,8 +7,8 @@ Three orthogonal steps live here so the runtime can compose them:
                                baselines (rvol_baseline) from the DB and
                                hydrate the in-memory SessionStore.
   * ``enrich_prime_bars``   -- walk a list of raw bars through
-                               ``st.apply_bar`` in ts order; pure state
-                               work, no DB.
+                               ``st.apply_bar`` (+ the speed tracker) in
+                               ts order; pure state work, no DB.
   * ``bulk_persist_bars``   -- bulk-insert an enriched batch into the
                                ``livestream`` table.
 
@@ -30,6 +30,7 @@ from backend.database.readers import (
     load_rvol_baseline_for_symbol,
 )
 from backend.database.writers import bulk_insert_livestream_bars
+from backend.datapipe.calculations.speed import SpeedStore, SpeedValue
 from indicators.session_state import SessionStore
 from backend.datapipe.time_utils import HELSINKI
 from backend.datapipe.schemas import CandleRow, MonitoredSymbols
@@ -96,29 +97,41 @@ async def seed_session_state(
 
 def enrich_prime_bars(
     store: SessionStore,
+    speed_store: SpeedStore,
     bars_by_symbol: Iterable[tuple[str, int, list[CandleRow]]],
-) -> list[CandleRow]:
+) -> tuple[list[CandleRow], list[SpeedValue]]:
     """
-    Walk each symbol's bars through ``st.apply_bar`` in ts order and
-    return the enriched batch. Pure in-memory state work -- no DB, no
+    Walk each symbol's bars through ``st.apply_bar`` and the speed
+    tracker in ts order and return the enriched batch plus the speed
+    for each bar (same order). Pure in-memory state work -- no DB, no
     awaits. Fed by live's REST prime; the caller shapes the input into
     ``(symbol, symbolid, [bars])`` tuples.
+
+    Priming the speed tracker here is what lets a live bar right after
+    startup continue a cross-down that began earlier in the session.
     """
     all_enriched: list[CandleRow] = []
+    all_speed: list[SpeedValue] = []
     for sym, _sid, bars in bars_by_symbol:
         if not bars:
             continue
         st = store.get(sym)
         for bar in bars:
-            all_enriched.append(st.apply_bar(bar))
-    return all_enriched
+            enriched = st.apply_bar(bar)
+            all_enriched.append(enriched)
+            all_speed.append(speed_store.update(enriched))
+    return all_enriched, all_speed
 
 
-async def bulk_persist_bars(pool: asyncpg.Pool, bars: list[CandleRow]) -> int:
+async def bulk_persist_bars(
+    pool: asyncpg.Pool,
+    bars: list[CandleRow],
+    speeds: list[SpeedValue],
+) -> int:
     """
-    Bulk-insert an enriched batch into ``livestream`` and return the row
-    count. No-op on empty input.
+    Bulk-insert an enriched batch (+ per-bar speed) into ``livestream``
+    and return the row count. No-op on empty input.
     """
     if bars:
-        await bulk_insert_livestream_bars(pool, bars)
+        await bulk_insert_livestream_bars(pool, bars, speeds)
     return len(bars)
