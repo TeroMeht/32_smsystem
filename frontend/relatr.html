@@ -41,7 +41,14 @@
                       letter-spacing: 0.4px; color: #e6e8ec; }
   .stream-header .meta { font-size: 11px; color: #8a92a5; }
 
-  /* Telegram alarm controls (Uptrend Reversals header only) */
+  /* collapsible tables: click the stream title */
+  .stream-header h2[data-collapse] { cursor: pointer; user-select: none; }
+  .stream-header h2[data-collapse]:hover { color: #ffffff; }
+  .stream-header h2 .caret { display: inline-block; width: 12px; color: #8a92a5; }
+  .stream.collapsed .filters,
+  .stream.collapsed table { display: none; }
+
+  /* Telegram alarm controls (Reversal longs header only) */
   .alarm-ctl { margin-left: auto; display: flex; gap: 8px; align-items: center;
                font-size: 12px; color: #8a92a5; }
   .alarm-ctl input { width: 44px; }
@@ -366,7 +373,7 @@
   }
 
   // Filter values used to live in localStorage -- drop the stale copies.
-  for (const k of ['uptrend.filters', 'shorts.filters', 'shorts.filters.v2']) {
+  for (const k of ['reversal_long.filters', 'shorts.filters', 'shorts.filters.v2']) {
     try { localStorage.removeItem(k); } catch {}
   }
 
@@ -421,8 +428,8 @@
   // ---------- streams ----------
   const STREAM_CONFIGS = [
     {
-      id:             'uptrend',
-      title:          'Uptrend Reversals',
+      id:             'reversal_long',
+      title:          'Reversal Longs',
       mountId:        'stream-relatr',
       // Only this stream drives Telegram alarms: its filter values ARE
       // the alarm thresholds, so alarm == what this table shows.
@@ -432,7 +439,7 @@
       apiFields:      { minRelatr: 'min_relatr', minRvol: 'min_rvol',
                         aboveSma200: 'above_sma200',
                         minDollarVolM: 'min_dollar_volume_m', minSpeed: 'min_speed' },
-      sortStorageKey: 'uptrend.sort.col',
+      sortStorageKey: 'reversal_long.sort.col',
       filterKeys:     ['minRelatr', 'minRvol', 'minDollarVolM', 'minSpeed', 'aboveSma200'],
       columns:        ['rank', 'symbol', 'sector', 'time', 'close', 'chg',
                        'rvol', 'relatr', 'speed', 'dvol', 'volume', 'cumvol', 'tv', 'block'],
@@ -563,7 +570,7 @@
         <div class="alarm-ctl"><span class="alarm-msg" data-alarm-msg></span></div>`;
     mount.innerHTML = `
       <div class="stream-header">
-        <h2>${cfg.title}</h2>
+        <h2 data-collapse title="Collapse / expand"><span class="caret" data-caret>▾</span> ${cfg.title}</h2>
         ${headerRightHtml}
       </div>
       <div class="filters">
@@ -582,6 +589,21 @@
         <tbody data-body></tbody>
       </table>
     `;
+
+    // Collapse / expand this table by clicking its title; remembered per table.
+    const COLLAPSE_KEY = `${cfg.mountId}.collapsed`;
+    const caretEl = mount.querySelector('[data-caret]');
+    function setCollapsed(collapsed) {
+      mount.classList.toggle('collapsed', collapsed);
+      caretEl.textContent = collapsed ? '▸' : '▾';
+      try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0'); } catch {}
+    }
+    let initiallyCollapsed = false;
+    try { initiallyCollapsed = localStorage.getItem(COLLAPSE_KEY) === '1'; } catch {}
+    setCollapsed(initiallyCollapsed);
+    mount.querySelector('[data-collapse]').addEventListener('click', () => {
+      setCollapsed(!mount.classList.contains('collapsed'));
+    });
 
     const bodyEl   = mount.querySelector('[data-body]');
     const headEl   = mount.querySelector('thead');
